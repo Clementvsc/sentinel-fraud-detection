@@ -32,10 +32,23 @@ def _home(customers_by_id, cust_id, ev):
     return ev["country"], float(ev["lat"]), float(ev["lon"]), ev["ts"]
 
 
-def replay(events: list[dict], customers_by_id: dict, use_entities: bool = True):
-    """Yield (feature_row_dict_or_raw, label, ts) in event order."""
+def replay(events: list[dict], customers_by_id: dict, use_entities: bool = True,
+           label_delay_hours: float | None = None):
+    """Yield (feature_row_dict_or_raw, label, ts) in event order.
+
+    Entity fraud statistics learn a transaction's fraud outcome only
+    `label_delay_hours` after it happened (default config.LABEL_DELAY_HOURS),
+    exactly as the live engine does — so the model is trained on the same
+    delayed-knowledge features it will see in production, instead of on
+    features that already "know" a payment minutes ago was fraud."""
+    import heapq
+    from datetime import timedelta
     profiles: dict[str, ProfileState] = {}
     reg = EntityRegistry() if use_entities else None
+    hours = config.LABEL_DELAY_HOURS if label_delay_hours is None else label_delay_hours
+    delay = timedelta(hours=hours) if hours > 0 else None
+    pending: list = []
+    seq = 0
     raw_mode = any("raw_features" in e for e in events[:50] if e.get("type") == "txn")
 
     for ev in events:
@@ -49,6 +62,11 @@ def replay(events: list[dict], customers_by_id: dict, use_entities: bool = True)
             row = ev["raw_features"]
             yield row, int(ev.get("label", 0)), ev["ts"]
             continue
+
+        if reg is not None:
+            while pending and pending[0][0] <= ev["ts"]:
+                rts, _s, keys = heapq.heappop(pending)
+                reg.confirm_fraud(keys, rts)
 
         cid = ev["cust_id"]
         ps = profiles.get(cid)
@@ -66,7 +84,15 @@ def replay(events: list[dict], customers_by_id: dict, use_entities: bool = True)
             if reg is not None:
                 reg.observe(ev, 0, ev["ts"])
         elif reg is not None:
-            reg.observe(ev, 1, ev["ts"])   # entity fraud stats *do* learn from fraud
+            # entity fraud stats *do* learn from fraud — once the outcome is known
+            if delay is None:
+                reg.observe(ev, 1, ev["ts"])
+            else:
+                reg.observe(ev, 0, ev["ts"])
+                seq += 1
+                keys = {k: ev.get(k, "") for k in
+                        ("cust_id", "merchant_id", "card_bin", "device_id", "beneficiary")}
+                heapq.heappush(pending, (ev["ts"] + delay, seq, keys))
 
 
 def build_dataset(events: list[dict], customers_by_id: dict):

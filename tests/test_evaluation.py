@@ -158,3 +158,54 @@ def test_evaluation_endpoint_serves_the_committed_report():
         assert r.status_code == 200
         j = r.json()
         assert {"confusion_matrix", "metrics", "threshold_free", "per_age_bracket"} <= set(j)
+
+
+# --------------------------------------------------------------------------- #
+# label timing and what the profile learns from
+# --------------------------------------------------------------------------- #
+def _mule_txn(cust, ts, benef="mule_X", label=1):
+    return {"type": "txn", "cust_id": cust, "ts": ts, "amount": 30000.0, "mcc": "wire_transfer",
+            "channel": "transfer", "merchant_id": benef, "beneficiary": benef, "country": "IN",
+            "city": "Mumbai", "lat": 19.08, "lon": 72.88, "device_id": f"dev_{cust}",
+            "card_bin": f"bin_{cust}", "label": label}
+
+
+def test_fraud_outcome_reaches_entity_stats_only_after_the_delay(trained_model):
+    """At scoring time the engine must not use a transaction's own fraud label
+    for the payee/device/merchant statistics — a bank only learns it later."""
+    from sentinel.engine import Engine
+    model, _ = trained_model
+    eng = Engine(model, autosnapshot=False, label_delay_hours=72)
+    t0 = datetime(2025, 5, 1, 10)
+    eng.process(_mule_txn("victim1", t0))
+    soon = eng.entities.snapshot_features(_mule_txn("victim2", t0 + timedelta(hours=1)), t0 + timedelta(hours=1))
+    assert soon["beneficiary_fraud_rate"] < 0.05          # outcome not known yet
+    later_ts = t0 + timedelta(hours=73)
+    eng.process(_mule_txn("someone", later_ts, benef="other_payee", label=0))   # time moves on
+    later = eng.entities.snapshot_features(_mule_txn("victim2", later_ts), later_ts)
+    assert later["beneficiary_fraud_rate"] > soon["beneficiary_fraud_rate"] * 3
+
+    instant = Engine(model, autosnapshot=False, label_delay_hours=0)
+    instant.process(_mule_txn("victim1", t0))
+    f = instant.entities.snapshot_features(_mule_txn("victim2", t0 + timedelta(hours=1)), t0 + timedelta(hours=1))
+    assert f["beneficiary_fraud_rate"] > soon["beneficiary_fraud_rate"] * 3
+
+
+def test_challenged_transactions_do_not_become_the_customers_normal(trained_model, monkeypatch):
+    """A transaction paused for verification must not be learned into the
+    behavioural profile — otherwise one stopped takeover attempt teaches the
+    profile that big transfers to the mule are routine, and the attacker's
+    follow-ups get through."""
+    from sentinel import engine as engmod
+    from sentinel.decision import Decision
+    from sentinel.engine import Engine
+    from sentinel.features import ProfileState
+    model, _ = trained_model
+    eng = Engine(model, autosnapshot=False)
+    eng.profiles["c1"] = ProfileState("c1", "IN", 19.08, 72.88, datetime(2020, 1, 1))
+    calls = []
+    monkeypatch.setattr(ProfileState, "update", lambda self, txn: calls.append(txn["amount"]))
+    for action in ("CHALLENGE", "BLOCK", "REVIEW", "ALLOW"):
+        monkeypatch.setattr(engmod, "decide", lambda *a, _act=action, **k: Decision(_act, 0.5, ["r"], [], None, False))
+        eng.process({**_mule_txn("c1", datetime(2025, 5, 1, 10), label=0), "amount": {"CHALLENGE": 1.0, "BLOCK": 2.0, "REVIEW": 3.0, "ALLOW": 4.0}[action]})
+    assert calls == [3.0, 4.0]

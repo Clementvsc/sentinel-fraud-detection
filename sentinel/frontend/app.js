@@ -420,7 +420,7 @@
   }
 
   /* ---------------- live data: websocket + polling fallback ---------------- */
-  let ws = null, polling = false, pollTimer = null;
+  let ws = null, polling = false, pollTimer = null, simulatorOn = true;
   function onMsg(msg) {
     if (msg.type === "snapshot") {
       renderHero(msg.metrics, msg.drift); renderPolicy(msg.metrics.policy_comparison);
@@ -441,10 +441,20 @@
     const loop = async () => {
       if (!paused) {
         try {
-          const r = await fetch("/tick?n=" + Math.max(1, Math.round(rate * 2.5)), { method: "POST" });
-          const j = await r.json();
-          (j.cases || []).forEach((cs) => onMsg({ type: "case", case: cs }));
-          onMsg({ type: "metrics", metrics: j.metrics, drift: j.drift });
+          if (simulatorOn) {
+            const r = await fetch("/tick?n=" + Math.max(1, Math.round(rate * 2.5)), { method: "POST" });
+            const j = await r.json();
+            (j.cases || []).forEach((cs) => onMsg({ type: "case", case: cs }));
+            onMsg({ type: "metrics", metrics: j.metrics, drift: j.drift });
+          } else {
+            // no synthetic traffic on this deployment: just pick up real
+            // transactions scored since the last poll
+            const cs = await (await fetch("/cases?limit=60")).json();
+            cs.slice().reverse().filter((c) => !cache.has(c.id)).forEach((c) => onMsg({ type: "case", case: c }));
+            const m = await (await fetch("/metrics")).json();
+            onMsg({ type: "metrics", metrics: m });
+          }
+          setLive(true, simulatorOn ? "live (polling)" : "live");
         } catch { setLive(false, "reconnecting…"); }
       }
       pollTimer = setTimeout(loop, 2500);
@@ -525,6 +535,111 @@
     } catch { toast("Couldn't reach the scoring API."); }
     finally { btn.disabled = false; btn.textContent = "Score this transaction"; }
   });
+
+  /* ---------------- bulk CSV upload ---------------- */
+  let bulkText = null, bulkResults = [];
+  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  $("#bulkFile")?.addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    bulkText = null; $("#bulkOut").innerHTML = "";
+    $("#bulkCheck").disabled = $("#bulkScore").disabled = true;
+    if (!f) { $("#bulkName").textContent = "Choose a CSV file…"; return; }
+    $("#bulkName").textContent = `${f.name} (${(f.size / 1024).toFixed(0)} KB)`;
+    if (f.size > 1_000_000) { $("#bulkOut").innerHTML = `<div class="uerr">That file is over 1 MB — split it into smaller files.</div>`; return; }
+    const rd = new FileReader();
+    rd.onload = () => { bulkText = rd.result; $("#bulkCheck").disabled = $("#bulkScore").disabled = false; };
+    rd.onerror = () => { $("#bulkOut").innerHTML = `<div class="uerr">Couldn't read that file.</div>`; };
+    rd.readAsText(f);
+  });
+
+  function renderBulk(j, scored) {
+    const errs = (j.errors || []).map((e) => `<tr><td>row ${e.row}</td><td>${esc(e.error)}</td></tr>`).join("");
+    const warn = (j.warnings || []).map((w) => `<div class="uwarn">${esc(w)}</div>`).join("");
+    let html = `<div class="usum">
+      <b>${j.rows.toLocaleString("en-IN")}</b> rows · <b class="ok">${j.valid.toLocaleString("en-IN")}</b> valid ·
+      <b class="${j.rejected ? "bad" : ""}">${j.rejected}</b> rejected${scored ? ` · <b>${j.scored}</b> scored` : " — nothing scored yet"}</div>${warn}`;
+    if (scored && j.decision_mix) {
+      const d = j.decision_mix;
+      html += `<div class="umix">${["ALLOW", "REVIEW", "CHALLENGE", "BLOCK"].map((a) =>
+        `<span class="verdict v-${a}">${I[a]}${VERDICT[a].label}: ${d[a]}</span>`).join(" ")}</div>`;
+    }
+    if (scored && j.labelled) {
+      const L = j.labelled, cm = L.confusion_matrix;
+      html += `<div class="ulab">On the ${L.labelled_rows} rows you labelled: caught <b>${cm.tp}</b> of ${cm.tp + cm.fn} fraud
+        (${nicePct(L.recall)}), ${cm.fp} false alarm${cm.fp === 1 ? "" : "s"} out of ${cm.fp + cm.tn} genuine
+        (${nicePct(L.false_positive_rate, 2)}), precision ${nicePct(L.precision)}.</div>`;
+    }
+    if (errs) html += `<details class="uerrs" ${scored ? "" : "open"}><summary>${j.rejected} rejected row${j.rejected === 1 ? "" : "s"} — why</summary>
+      <table>${errs}</table>${j.rejected > (j.errors || []).length ? `<div class="hint">Showing the first ${(j.errors || []).length}.</div>` : ""}</details>`;
+    if (scored && j.results?.length) {
+      bulkResults = j.results;
+      const flagged = j.results.filter((r) => r.action !== "ALLOW").slice(0, 25);
+      html += `<div class="ures"><div class="urhd"><b>${flagged.length ? "Flagged transactions" : "No transactions flagged"}</b>
+          <button class="ghost" id="bulkDl">Download all results (CSV)</button></div>
+        ${flagged.length ? `<table>${flagged.map((r) => `<tr data-id="${r.id}">
+          <td>${esc(r.cust_id)}</td><td>${money(r.amount)}</td>
+          <td><span class="verdict v-${r.action}">${VERDICT[r.action].label}</span></td>
+          <td class="ureason">${esc(r.reason)}</td></tr>`).join("")}</table>
+          <div class="hint">Click a row to open its full explanation.</div>` : ""}</div>`;
+    }
+    $("#bulkOut").innerHTML = html;
+    $("#bulkDl")?.addEventListener("click", () => {
+      const cols = ["id", "ts", "cust_id", "amount", "action", "risk", "age_bracket", "label", "reason"];
+      const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const csvOut = [cols.join(","), ...bulkResults.map((r) => cols.map((c) => q(r[c])).join(","))].join("\n");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csvOut], { type: "text/csv" }));
+      a.download = "sentinel_results.csv"; a.click(); URL.revokeObjectURL(a.href);
+    });
+    document.querySelectorAll(".ures tr[data-id]").forEach((tr) =>
+      tr.addEventListener("click", async () => {
+        const id = +tr.dataset.id;
+        if (!cache.has(id)) {
+          try {
+            const r = await fetch(`/cases/${id}`);
+            if (!r.ok) { toast("That case has aged out of the live buffer."); return; }
+            cache.set(id, await r.json());
+          } catch { toast("Couldn't load that case."); return; }
+        }
+        selectCase(id);
+        $("#detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }));
+  }
+
+  async function sendBulk(validateOnly) {
+    if (!bulkText) return;
+    const btn = validateOnly ? $("#bulkCheck") : $("#bulkScore"), original = btn.textContent;
+    $("#bulkCheck").disabled = $("#bulkScore").disabled = true;
+    btn.textContent = validateOnly ? "Checking…" : "Scoring…";
+    try {
+      const r = await fetch("/upload/transactions", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: bulkText, validate_only: validateOnly }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        $("#bulkOut").innerHTML = `<div class="uerr">${esc(typeof j.detail === "string" ? j.detail : "The file couldn't be processed.")}</div>`;
+        return;
+      }
+      renderBulk(j, !validateOnly);
+      if (!validateOnly) {
+        // With a live WebSocket every scored case already arrived via
+        // broadcast. Without one (serverless/polling) pull them in, so the
+        // feed shows the upload either way — and nothing is counted twice.
+        if (polling || !ws || ws.readyState !== 1) {
+          try {
+            const cs = await (await fetch(`/cases?limit=${Math.min(j.scored, 60)}`)).json();
+            cs.slice().reverse().filter((c) => !cache.has(c.id)).forEach((c) => {
+              addTxn(c); $("#feedcount").textContent = (+$("#feedcount").textContent + 1);
+            });
+          } catch {}
+        }
+        toast(`Scored ${j.scored} uploaded transactions — ${j.stopped} stopped.`);
+        loadAgeBreakdown();
+      }
+    } catch { $("#bulkOut").innerHTML = `<div class="uerr">Couldn't reach the upload API.</div>`; }
+    finally { btn.textContent = original; $("#bulkCheck").disabled = $("#bulkScore").disabled = !bulkText; }
+  }
+  $("#bulkCheck")?.addEventListener("click", () => sendBulk(true));
+  $("#bulkScore")?.addEventListener("click", () => sendBulk(false));
 
   /* ---------------- real-data replay ---------------- */
   document.querySelectorAll(".replayBtn").forEach((btn) => {
@@ -691,6 +806,10 @@
 
   /* ---------------- boot ---------------- */
   fetch("/health").then((r) => r.json()).then((h) => {
+    if (h.simulator === false) {
+      simulatorOn = false;
+      ["#sim", "#blendBlock"].forEach((sel) => { const el = $(sel); if (el) el.style.display = "none"; });
+    }
     if (h.serverless) startPolling(); else connect();
   }).catch(connect);
   loadAgeBreakdown();

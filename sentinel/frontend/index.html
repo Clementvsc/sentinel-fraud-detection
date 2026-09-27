@@ -116,6 +116,21 @@
         </div>
       </details>
 
+      <details class="sim" id="bulk">
+        <summary>Upload transactions (CSV)</summary>
+        <div class="body">
+          <div class="hint">Score a batch exported from your own system — up to 2,000 rows. Required columns: <code>cust_id</code>, <code>amount</code>.
+            Recommended: <code>timestamp</code>, <code>merchant</code>, <code>category</code>, <code>channel</code>, <code>city</code>, <code>device_id</code>, <code>cust_age</code>, and <code>is_fraud</code> if you know the outcome (Sentinel then reports how it did).
+            <a href="/upload/template.csv" download>Download a template</a>.</div>
+          <div class="upl">
+            <label class="fpick"><input type="file" id="bulkFile" accept=".csv,text/csv"><span id="bulkName">Choose a CSV file…</span></label>
+            <button class="ghost" id="bulkCheck" disabled>Check file</button>
+            <button class="abtn" id="bulkScore" disabled>Score all rows</button>
+          </div>
+          <div id="bulkOut"></div>
+        </div>
+      </details>
+
       <details class="sim" id="replay">
         <summary>Replay real transactions</summary>
         <div class="body">
@@ -125,11 +140,13 @@
             <button class="abtn replayBtn" data-schema="paysim">Replay 100 real PaySim transactions</button>
           </div>
           <div class="hint" id="replayStatus"></div>
-          <div class="hint" style="margin-top:10px">Or stream one combined feed — real UPI transactions merged chronologically with fresh synthetic INR traffic, scored in a single timeline:</div>
-          <div class="btns">
-            <button class="abtn" id="blendBtn">Replay 100 blended (real UPI + synthetic)</button>
+          <div id="blendBlock">
+            <div class="hint" style="margin-top:10px">Or stream one combined feed — real UPI transactions merged chronologically with fresh synthetic INR traffic, scored in a single timeline:</div>
+            <div class="btns">
+              <button class="abtn" id="blendBtn">Replay 100 blended (real UPI + synthetic)</button>
+            </div>
+            <div class="hint" id="blendStatus"></div>
           </div>
-          <div class="hint" id="blendStatus"></div>
         </div>
       </details>
       <div class="feed" id="feed"></div>

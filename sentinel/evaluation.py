@@ -136,7 +136,8 @@ def _r(x, d=4):
 # the pipeline run
 # --------------------------------------------------------------------------- #
 def evaluate(model=None, n_customers: int = 110, days: int = 35,
-             seed: int | None = None, n_boot: int = 500, progress=None) -> dict:
+             seed: int | None = None, n_boot: int = 500, progress=None,
+             label_delay_hours: float | None = None) -> dict:
     """Score a held-out world through the full pipeline and build the report."""
     from sklearn.metrics import average_precision_score, roc_auc_score
 
@@ -155,7 +156,7 @@ def evaluate(model=None, n_customers: int = 110, days: int = 35,
     if seed == config.TRAIN_SEED:
         raise ValueError("evaluation seed must differ from the training seed")
 
-    engine = Engine(model, autosnapshot=False)
+    engine = Engine(model, autosnapshot=False, label_delay_hours=label_delay_hours)
     src = SyntheticSource(n_customers, days, seed=seed)
     engine.customers = {c.cust_id: c for c in src.customers}
     for c in src.customers:
@@ -238,6 +239,7 @@ def evaluate(model=None, n_customers: int = 110, days: int = 35,
             "fraud_prevalence": _r(y_a.mean() if len(y_a) else None, 5),
         },
         "definition": "positive prediction = BLOCK or CHALLENGE; positive label = fraud",
+        "label_delay_hours": (engine.label_delay.total_seconds() / 3600 if engine.label_delay else 0.0),
         "operating_point": {
             "block_risk": config.RISK_BLOCK, "challenge_risk": config.RISK_CHALLENGE,
             "review_risk": config.RISK_REVIEW,
@@ -260,6 +262,9 @@ def evaluate(model=None, n_customers: int = 110, days: int = 35,
             "recall_gap": _r(max(recs) - min(recs)) if len(recs) >= 2 else None,
         },
         "decision_mix": actions,
+        # every transaction is also scored rules-only and model-only (shadow
+        # policies); detection = BLOCK or CHALLENGE on fraud, FP = BLOCK on legit
+        "policy_comparison": engine.metrics_snapshot()["policy_comparison"],
         "money": {"fraud_amount_inr": round(fraud_amt, 2), "prevented_inr": round(saved, 2),
                   "prevented_share": _r(saved / fraud_amt) if fraud_amt else None},
         # PSI over the whole run includes the warm-up period in which every

@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import base64
+import hashlib
+import hmac
 import json
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -111,10 +114,59 @@ class Hub:
                 self.disconnect(ws)
 
 
-app = FastAPI(title="Sentinel — AI Banking Fraud Detection", version="0.2.0")
+app = FastAPI(title="Sentinel — AI Banking Fraud Detection", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 hub = Hub()
 STATE: dict = {}
+
+# ---- optional HTTP Basic auth (SENTINEL_BASIC_AUTH="user:password") -----------
+_SESSION_COOKIE = "sentinel_session"
+
+
+def _session_token() -> str:
+    # derived from the configured secret: changing the password logs everyone out
+    return hmac.new(config.BASIC_AUTH.encode(), b"sentinel-session-v1", hashlib.sha256).hexdigest()
+
+
+def _is_authenticated(headers, cookies) -> bool:
+    if not config.BASIC_AUTH:
+        return True
+    if hmac.compare_digest(cookies.get(_SESSION_COOKIE, ""), _session_token()):
+        return True
+    h = headers.get("authorization", "")
+    if h[:6].lower() == "basic ":
+        try:
+            supplied = base64.b64decode(h[6:], validate=True).decode("utf-8")
+        except Exception:
+            return False
+        return hmac.compare_digest(supplied.encode(), config.BASIC_AUTH.encode())
+    return False
+
+
+@app.middleware("http")
+async def _require_auth(request, call_next):
+    if not config.BASIC_AUTH:
+        return await call_next(request)
+    ok = _is_authenticated(request.headers, request.cookies)
+    if not ok:
+        if request.url.path == "/health":            # platform health checks
+            return JSONResponse({"status": "ok" if STATE.get("engine") else "starting"})
+        return Response("Authentication required", status_code=401,
+                        headers={"WWW-Authenticate": 'Basic realm="Sentinel", charset="UTF-8"'})
+    resp = await call_next(request)
+    token = _session_token()
+    if request.cookies.get(_SESSION_COOKIE) != token:
+        # lets the browser's WebSocket (which can't send Basic auth) authenticate
+        resp.set_cookie(_SESSION_COOKIE, token, httponly=True, samesite="strict",
+                        secure=request.url.scheme == "https", max_age=12 * 3600)
+    return resp
+
+
+def _require_simulator() -> None:
+    if not config.SIMULATOR_ENABLED:
+        raise HTTPException(403, "the synthetic traffic simulator is disabled on this deployment "
+                                 "(SENTINEL_DISABLE_SIMULATOR) — score real transactions via /score, "
+                                 "CSV upload or /replay")
 
 
 def _boot() -> None:
@@ -130,7 +182,8 @@ def _boot() -> None:
     engine = Engine(model)
     engine.seed_population()
     sim = Simulator(engine, hub.broadcast)
-    sim.start()
+    if config.SIMULATOR_ENABLED:
+        sim.start()
     STATE.update(model=model, engine=engine, sim=sim)
     print(f"[sentinel] ready — {model.meta.get('model')} | "
           f"OOT ROC-AUC {model.meta.get('roc_auc')} | "
@@ -141,7 +194,7 @@ def _boot() -> None:
 async def _startup() -> None:
     await asyncio.get_event_loop().run_in_executor(None, _boot)
     sim: Simulator | None = STATE.get("sim")
-    if sim:
+    if sim and config.SIMULATOR_ENABLED:
         sim.start()      # (re)start the background loop from the async context
 
 
@@ -181,6 +234,7 @@ def health() -> dict:
     return {
         "status": "ok" if eng else "starting",
         "serverless": config.SERVERLESS,
+        "simulator": config.SIMULATOR_ENABLED,
         "model": STATE["model"].meta if STATE.get("model") else None,
         "drift": eng.drift_status() if eng else None,
         "state_backend": eng.store.backend if eng else None,
@@ -207,6 +261,7 @@ async def score(txn: TransactionIn) -> JSONResponse:
 async def tick(n: int = 10) -> dict:
     """Generate + score `n` ambient transactions on demand. The dashboard calls
     this when the live WebSocket isn't available (serverless / restricted hosts)."""
+    _require_simulator()
     sim: Simulator = _sim()
     cases = sim.tick(n)
     return {"cases": cases, "metrics": _engine().metrics_snapshot(),
@@ -296,6 +351,7 @@ async def replay_blended(r: BlendIn) -> dict:
     order — the same way a real production feed would see real and any
     newly-onboarded traffic arrive interleaved, not as two separate blocks.
     """
+    _require_simulator()
     import random
     from pathlib import Path
     from datetime import timedelta
@@ -400,6 +456,69 @@ def metrics_by_age() -> dict:
     return _engine().age_breakdown()
 
 
+class UploadIn(BaseModel):
+    csv: str = Field(min_length=1)
+    validate_only: bool = False     # check the file without scoring anything
+
+
+@app.get("/upload/template.csv")
+def upload_template():
+    from fastapi.responses import Response
+    from .upload import TEMPLATE_CSV
+    return Response(TEMPLATE_CSV, media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="sentinel_upload_template.csv"'})
+
+
+@app.post("/upload/transactions")
+async def upload_transactions(u: UploadIn) -> dict:
+    """Bulk-score a CSV of transactions (sent as text). Invalid rows are
+    rejected individually with row number + reason; valid rows are scored in
+    time order through the same pipeline as live traffic and appear in the
+    dashboard feed. If the file carries fraud labels, the response includes
+    how Sentinel did on them (confusion matrix, recall, precision)."""
+    from .upload import parse_transactions_csv
+    from .evaluation import confusion, rates
+
+    try:
+        parsed = parse_transactions_csv(u.csv)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    events = parsed["events"]
+    out = {"rows": parsed["rows"], "valid": len(events), "rejected": len(parsed["errors"]),
+           "errors": parsed["errors"][:200], "warnings": parsed["warnings"]}
+    if u.validate_only:
+        return {**out, "scored": 0, "validate_only": True}
+
+    eng = _engine()
+    results, y_true, y_pred = [], [], []
+    mix = {"ALLOW": 0, "REVIEW": 0, "CHALLENGE": 0, "BLOCK": 0}
+    for ev in events:
+        labelled = ev.pop("_labelled", False)
+        case = eng.process(ev)
+        mix[case["action"]] += 1
+        stopped = case["action"] in ("BLOCK", "CHALLENGE")
+        if labelled:
+            y_true.append(int(case["label"]))
+            y_pred.append(int(stopped))
+        results.append({"id": case["id"], "ts": case["ts"], "cust_id": case["cust_id"],
+                        "amount": case["amount"], "action": case["action"], "risk": case["risk"],
+                        "age_bracket": case["age_bracket"], "label": case["label"] if labelled else None,
+                        "reason": (case["reasons"][1] if len(case["reasons"]) > 1 else case["reasons"][0])})
+        await hub.broadcast({"type": "case", "case": case})
+    await hub.broadcast({"type": "metrics", "metrics": eng.metrics_snapshot(), "drift": eng.drift_status()})
+
+    labelled_summary = None
+    if y_true:
+        cm = confusion(y_true, y_pred)
+        r = rates(cm)
+        labelled_summary = {"labelled_rows": len(y_true), "confusion_matrix": cm,
+                            "recall": r["recall"], "precision": r["precision"],
+                            "false_positive_rate": r["false_positive_rate"]}
+    return {**out, "scored": len(results), "decision_mix": mix,
+            "stopped": mix["BLOCK"] + mix["CHALLENGE"],
+            "labelled": labelled_summary, "results": results[:500]}
+
+
 @app.get("/evaluation")
 def evaluation_report() -> dict:
     """The held-out model evaluation report (confusion matrix, precision /
@@ -431,6 +550,14 @@ def online_status() -> dict:
 @app.get("/cases")
 def cases(limit: int = 60, only: str | None = None) -> list[dict]:
     return _engine().recent_cases(limit=limit, only=only)
+
+
+@app.get("/cases/{case_id}")
+def case_by_id(case_id: int) -> dict:
+    c = _engine().get_case(case_id)
+    if c is None:
+        raise HTTPException(404, f"case {case_id} is no longer in the live buffer")
+    return c
 
 
 @app.post("/whatif")
@@ -471,6 +598,7 @@ async def sim_inject_ring(scenario: str, ring_size: int = 4) -> dict:
     mule beneficiary — a real fraud ring. Unlike /simulator/inject (one
     victim), this actually creates the shared entities the forensics graph
     and ring_size/fanout features are built to detect."""
+    _require_simulator()
     sim: Simulator = _sim()
     try:
         result = sim.inject_ring(scenario, ring_size=ring_size)
@@ -571,6 +699,7 @@ async def queue_release(case_id: int, body: QueueClaimIn) -> dict:
 
 @app.post("/simulator/config")
 def sim_config(cfg: SimConfigIn) -> dict:
+    _require_simulator()
     sim: Simulator = _sim()
     sim.configure(rate=cfg.rate, fraud_rate=cfg.fraud_rate, running=cfg.running)
     return {"rate": sim.rate, "fraud_rate": sim.fraud_rate, "running": sim.running}
@@ -578,6 +707,7 @@ def sim_config(cfg: SimConfigIn) -> dict:
 
 @app.post("/simulator/inject/{scenario}")
 def sim_inject(scenario: str) -> dict:
+    _require_simulator()
     sim: Simulator = _sim()
     try:
         return sim.inject(scenario)
@@ -587,6 +717,9 @@ def sim_inject(scenario: str) -> dict:
 
 @app.websocket("/ws/stream")
 async def ws_stream(ws: WebSocket) -> None:
+    if not _is_authenticated(ws.headers, ws.cookies):
+        await ws.close(code=1008)                     # policy violation: not logged in
+        return
     await hub.connect(ws)
     try:
         eng = STATE.get("engine")

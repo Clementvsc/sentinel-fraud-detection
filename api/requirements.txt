@@ -1,14 +1,13 @@
-# Vercel installs this file (same directory as api/index.py). Pinned to the
-# exact versions the committed model.joblib was trained/pickled with —
-# scikit-learn's internal module layout is NOT stable across even minor
-# versions, so an unpinned range (e.g. scikit-learn>=1.4) can silently
-# resolve to a newer release that fails to unpickle the model at cold start
-# (ModuleNotFoundError: No module named '_loss' or similar).
-fastapi==0.141.1
+# Vercel function dependencies. Keep these IDENTICAL to the pins in the root
+# requirements.txt: scikit-learn/numpy/scipy/joblib must match the versions
+# that trained sentinel/artifacts/model.joblib, or the model can fail to
+# unpickle at cold start. (scikit-learn 1.8.0 needs Python >= 3.11; Vercel's
+# Python runtime is 3.12.)
+fastapi>=0.110
 scikit-learn==1.8.0
 numpy==2.4.4
 scipy==1.17.1
 joblib==1.5.3
-pydantic==2.13.3
-groq>=0.11        # /qa endpoint (Groq-backed Q&A) — needs GROQ_API_KEY set
-redis>=5          # queue/feedback/state persistence — needs SENTINEL_REDIS_URL set
+pydantic>=2.5
+redis>=5    # only used when SENTINEL_REDIS_URL is set
+groq>=0.11  # only used by /qa when GROQ_API_KEY is set

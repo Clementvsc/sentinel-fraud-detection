@@ -34,6 +34,11 @@ W_ANOMALY = 0.25        # isolation-forest novelty detector
 # supervised head's *label* is chosen to minimise expected cost on validation.
 COST_FALSE_NEGATIVE = 1.0    # relative cost of letting a fraud txn through (per $1)
 COST_FALSE_POSITIVE = 0.04   # relative cost of blocking a legit txn (friction/churn)
+# Optional fixed operating point: the model probability at or above which a
+# transaction is challenged. Unset = the cost-minimising threshold learned at
+# training time. docs/EVALUATION.md ("Operating points") shows the trade-off.
+_thr = os.getenv("SENTINEL_MODEL_THRESHOLD", "").strip()
+MODEL_THRESHOLD_OVERRIDE = float(_thr) if _thr else None
 #   -> a blocked legit txn "costs" as much as missing ~$0.04 of fraud per $1.
 
 # --------------------------------------------------------------------------- #
@@ -53,6 +58,10 @@ RING_SIZE_CHALLENGE = 4          # distinct victims sharing this device/benefici
 # --------------------------------------------------------------------------- #
 ENTITY_PRIOR_STRENGTH = 20.0     # pseudo-counts pulling a fresh entity to base rate
 ENTITY_HALFLIFE_DAYS = 30.0      # exponential decay on entity fraud statistics
+# Hours before a transaction's confirmed fraud outcome reaches the entity
+# statistics (chargebacks / customer reports / analyst decisions arrive late).
+# 0 = outcomes known instantly — an unrealistic upper bound, kept only for comparison.
+LABEL_DELAY_HOURS = float(os.getenv("SENTINEL_LABEL_DELAY_HOURS", "72"))
 
 # --------------------------------------------------------------------------- #
 # Drift monitoring (Population Stability Index)
@@ -91,3 +100,13 @@ REDIS_URL = os.getenv("SENTINEL_REDIS_URL", "")   # empty -> in-memory + disk sn
 # stream is driven by the client polling POST /tick instead of an asyncio task,
 # and attack injection is processed synchronously.
 SERVERLESS = os.getenv("SENTINEL_SERVERLESS", "").lower() in ("1", "true", "yes")
+
+# ---- deployment hardening (both off by default, for the open demo) ----------
+# "user:password" -> the dashboard and every API route require HTTP Basic auth
+# (the browser shows a login prompt); /health stays reachable for platform
+# health checks but only reports status to unauthenticated callers.
+BASIC_AUTH = os.getenv("SENTINEL_BASIC_AUTH", "").strip() or None
+# 1 -> no synthetic traffic or attack injection: the background simulator is
+# not started and /tick, /simulator/* and /replay/blended return 403, so a
+# deployment only ever scores real transactions (/score, CSV upload, /replay).
+SIMULATOR_ENABLED = os.getenv("SENTINEL_DISABLE_SIMULATOR", "").lower() not in ("1", "true", "yes")

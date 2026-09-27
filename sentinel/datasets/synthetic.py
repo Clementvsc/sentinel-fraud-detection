@@ -25,12 +25,15 @@ from typing import Dict, List
 from .. import config
 
 # name, country, lat, lon
+# Customers live in Indian cities (an Indian bank's book, spending INR); the
+# far/foreign cities are where stolen-card and takeover fraud and genuine
+# overseas travel happen.
 WORLD = [
-    ("New York", "US", 40.71, -74.01), ("Chicago", "US", 41.88, -87.63),
-    ("Los Angeles", "US", 34.05, -118.24), ("Austin", "US", 30.27, -97.74),
-    ("London", "GB", 51.51, -0.13), ("Manchester", "GB", 53.48, -2.24),
-    ("Berlin", "DE", 52.52, 13.40), ("Paris", "FR", 48.86, 2.35),
-    ("Mumbai", "IN", 19.08, 72.88), ("Singapore", "SG", 1.35, 103.82),
+    ("Mumbai", "IN", 19.08, 72.88), ("Delhi", "IN", 28.61, 77.21),
+    ("Bengaluru", "IN", 12.97, 77.59), ("Chennai", "IN", 13.08, 80.27),
+    ("Hyderabad", "IN", 17.39, 78.49), ("Kolkata", "IN", 22.57, 88.36),
+    ("Pune", "IN", 18.52, 73.86), ("Ahmedabad", "IN", 23.02, 72.57),
+    ("Dubai", "AE", 25.20, 55.27), ("Singapore", "SG", 1.35, 103.82),
     ("Lagos", "NG", 6.52, 3.38), ("Kyiv", "UA", 50.45, 30.52),
     ("Sao Paulo", "BR", -23.55, -46.63),
 ]

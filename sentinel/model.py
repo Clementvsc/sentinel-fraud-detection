@@ -23,7 +23,8 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
 from .config import (
-    COST_FALSE_NEGATIVE, COST_FALSE_POSITIVE, MODEL_PATH, W_ANOMALY, W_SUPERVISED,
+    COST_FALSE_NEGATIVE, COST_FALSE_POSITIVE, MODEL_PATH, MODEL_THRESHOLD_OVERRIDE,
+    W_ANOMALY, W_SUPERVISED,
 )
 
 
@@ -161,7 +162,12 @@ class FraudModel:
 
     @property
     def label_threshold(self) -> float:
-        return float(self.meta.get("cost_threshold", 0.5))
+        # a bank can set its own operating point (fraud caught vs genuine
+        # customers challenged) without retraining
+        override = getattr(self, "threshold_override", None)
+        if override is None:
+            override = MODEL_THRESHOLD_OVERRIDE
+        return float(override if override is not None else self.meta.get("cost_threshold", 0.5))
 
     # ---- persistence ----------------------------------------------
     def save(self, path=MODEL_PATH):
@@ -203,24 +209,76 @@ def _fit_iso(X, y):
     return iso
 
 
+def _argmin_cost_threshold(y: np.ndarray, proba: np.ndarray, c_fn: float, c_fp: float) -> tuple[float, float]:
+    """Exact cost-minimising threshold on one sample (vectorised sweep)."""
+    order = np.argsort(-proba, kind="stable")
+    p, yy = proba[order], y[order].astype(int)
+    tp = np.cumsum(yy)                       # predicting positive for the top-k
+    fp = np.cumsum(1 - yy)
+    fn = yy.sum() - tp
+    cost = c_fp * fp + c_fn * fn
+    # only cut between distinct probability values (ties must go together)
+    last_of_value = np.r_[p[1:] != p[:-1], True]
+    cost_at = np.where(last_of_value, cost, np.inf)
+    k = int(np.argmin(cost_at))
+    none_cost = c_fn * yy.sum()              # predict nothing positive
+    if none_cost <= cost_at[k]:
+        return 1.0, float(none_cost)
+    return float(p[k]), float(cost_at[k])
+
+
 def cost_threshold(y: np.ndarray, proba: np.ndarray,
                    c_fn: float = COST_FALSE_NEGATIVE,
-                   c_fp: float = COST_FALSE_POSITIVE) -> tuple[float, float]:
-    """Threshold on `proba` that minimises expected cost. Returns (thr, cost)."""
-    order = np.argsort(proba)
-    p, yy = proba[order], y[order]
-    best_t, best_c = 0.5, float("inf")
-    for t in np.unique(np.concatenate([[0.0], p, [1.0]])):
-        pred = proba >= t
-        fp = int(np.sum(pred & (y == 0)))
-        fn = int(np.sum(~pred & (y == 1)))
-        c = c_fp * fp + c_fn * fn
-        if c < best_c:
-            best_c, best_t = c, float(t)
-    return best_t, best_c
+                   c_fp: float = COST_FALSE_POSITIVE,
+                   n_boot: int = 200, seed: int = 0) -> tuple[float, float]:
+    """Threshold on `proba` that minimises expected cost. Returns (thr, cost).
+
+    The exact minimiser on a single validation slice can be fragile:
+    calibrated probabilities are step-shaped, so the minimum may sit on a step
+    that suits that one slice. The threshold is therefore the median of the
+    cost-minimising thresholds over bootstrap resamples of the validation
+    slice — a standard way to stabilise a data-driven cut-off. (Where the
+    slice's optimum is already stable, this returns the same value.) The
+    cost ratio is a business setting; `SENTINEL_MODEL_THRESHOLD` overrides
+    the learned value entirely — see docs/EVALUATION.md "Operating points"."""
+    y = np.asarray(y).astype(int)
+    proba = np.asarray(proba, dtype=float)
+    if n_boot <= 1 or y.sum() == 0:
+        return _argmin_cost_threshold(y, proba, c_fn, c_fp)
+    rng = np.random.default_rng(seed)
+    ts = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(y), len(y))
+        if y[idx].sum() == 0:
+            continue
+        ts.append(_argmin_cost_threshold(y[idx], proba[idx], c_fn, c_fp)[0])
+    thr = float(np.median(ts)) if ts else _argmin_cost_threshold(y, proba, c_fn, c_fp)[0]
+    pred = proba >= thr
+    cost = c_fp * int(np.sum(pred & (y == 0))) + c_fn * int(np.sum(~pred & (y == 1)))
+    return thr, float(cost)
 
 
 ISOTONIC_MIN_POSITIVES = 50   # below this many validation frauds, calibrate with a sigmoid
+
+
+def _sigmoid_helps(raw: np.ndarray, y: np.ndarray, folds: int = 5, seed: int = 0) -> bool:
+    """Does sigmoid calibration beat the raw probabilities out-of-fold?
+    With few positives calibration can make things worse, so it has to earn
+    its place (stratified k-fold Brier comparison on the validation slice)."""
+    from sklearn.model_selection import StratifiedKFold
+    y = np.asarray(y, int)
+    k = int(min(folds, y.sum(), len(y) - y.sum()))
+    if k < 2:
+        return False
+    cal_err = raw_err = 0.0
+    for tr, te in StratifiedKFold(n_splits=k, shuffle=True, random_state=seed).split(raw, y):
+        c = PlattCalibrator().fit(raw[tr], y[tr])
+        cal_err += float(np.sum((c.predict(raw[te]) - y[te]) ** 2))
+        raw_err += float(np.sum((raw[te] - y[te]) ** 2))
+    # must be a real improvement (>= 1% lower out-of-fold squared error), not
+    # a noise-level tie — a sigmoid can represent "no change" exactly, so on
+    # scores that are already calibrated it merely ties
+    return cal_err < 0.99 * raw_err
 
 
 class PlattCalibrator:
@@ -275,15 +333,17 @@ def train(X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None,
         if n_pos_va >= ISOTONIC_MIN_POSITIVES:
             calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
             calibration_method = "isotonic"
-        else:
+        elif _sigmoid_helps(raw_va, y[va]):
             # Too few fraud cases for isotonic regression, which then overfits
             # into a handful of coarse steps (seen with 17 validation frauds:
             # calibrated Brier WORSE than raw, and probabilities snapping to a
             # single step value). A 2-parameter sigmoid is the standard choice
-            # for small calibration sets.
+            # for small calibration sets — used only if cross-validation on
+            # the validation slice shows it actually improves on raw scores.
             calibrator = PlattCalibrator()
             calibration_method = "sigmoid"
-        calibrator.fit(raw_va, y[va])
+        if calibrator is not None:
+            calibrator.fit(raw_va, y[va])
     cal_va = np.clip(calibrator.predict(raw_va), 0, 1) if calibrator is not None else raw_va
 
     thr, _ = cost_threshold(y[va], cal_va)

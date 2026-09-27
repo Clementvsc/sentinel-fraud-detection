@@ -21,7 +21,7 @@ every head is independently explainable:
 
 | Head | Implementation | Catches |
 |---|---|---|
-| **Supervised** | `HistGradientBoostingClassifier` + **isotonic calibration** (Brier ↓ ~5–8×) | known fraud shapes |
+| **Supervised** | `HistGradientBoostingClassifier` + **isotonic calibration** (sigmoid, or none, when there is too little data to calibrate reliably) | known fraud shapes |
 | **Anomaly** | `IsolationForest` | novel patterns with no training examples |
 | **Behavioural sequence** | smoothed per‑customer unigram surprise + regime‑shift KL divergence over discrete behaviour tokens | a grocery/POS customer suddenly wiring money; drum‑beat repetition |
 
@@ -30,7 +30,7 @@ fed by:
 | Feature family | Detail |
 |---|---|
 | **Behavioural** (31) | amount vs personal norm, tempo, geo, device, login history, impossible‑travel speed |
-| **Entity + graph** (13, [`entities.py`](sentinel/entities.py)) | Bayesian‑smoothed, time‑decayed **historical fraud rate** per merchant / card BIN / device / payee, plus **graph fan‑in/out** (a mule collecting from 6 victims, one device on 6 logins → ring) |
+| **Entity + graph** (13, [`entities.py`](sentinel/entities.py)) | Bayesian‑smoothed, time‑decayed **historical fraud rate** per merchant / card BIN / device / payee (device and card count *other* customers' fraud; outcomes arrive after a realistic delay), plus **graph fan‑in/out** (a mule collecting from 6 victims, one device on 6 logins → ring) |
 | **Sequence** (4) | see above |
 
 wrapped in:
@@ -44,7 +44,9 @@ wrapped in:
 | **Feedback loop** | `POST /feedback` records analyst dispositions + delayed chargebacks; retrain folds them in with **label‑maturity sample weighting** |
 | **Policy A/B** | every transaction is *also* scored rules‑only and model‑only, live, so you can see the ensemble beat either alone |
 | **State** | `StateStore` abstraction — in‑memory + atomic disk snapshot, restart‑safe; optional shared **Redis** via `SENTINEL_REDIS_URL` |
-| **Assurance** | `python -m sentinel.audit` — latency percentiles + throughput, and fairness / disparate‑impact by country / spend tier / channel |
+| **Assurance** | `python -m sentinel.audit` — latency percentiles + throughput, and fairness / disparate‑impact by country / spend tier / age / channel |
+| **Evaluation** | `python -m sentinel.eval` — held-out confusion matrix, precision / recall / F1 / MCC with 95 % CIs, ROC & PR-AUC, calibration, per-attack recall, age fairness, operating points → [docs/EVALUATION.md](docs/EVALUATION.md) |
+| **Data entry** | score one transaction by hand, or **upload a CSV** of up to 2,000 (row-level validation; reports accuracy if the file has fraud labels) |
 | **Data** | seeded synthetic generator (7 playbooks, 3 adversarial) **or** real data — `python -m sentinel.datasets.fetch ulb` pulls **284,807 real transactions** cost‑free, or point `SENTINEL_DATA=` at any Kaggle ULB / IEEE‑CIS / Sparkov CSV |
 
 ---
@@ -71,66 +73,71 @@ entity aggregates are built by replaying events in time order.
 
 ## Model performance
 
-Trained on a seeded synthetic world (**400 customers × 90 days ≈ 140k
-transactions**, 0.75 % fraud) with 7 attack playbooks — including three
-**adversarial** ones built to dodge naive rules (`amount_just_under`,
-`slow_drip`, `geo_consistent_ato`) — plus fraud‑*looking* legitimate noise.
+All figures below are reproducible with `python -m sentinel.eval`, which writes the
+full model-risk report to [docs/EVALUATION.md](docs/EVALUATION.md) (also served at
+`GET /evaluation` and shown on the dashboard).
 
-Validation is **time‑ordered**: train = first 70 % by timestamp, validation =
-next 15 % (calibration + threshold), **test = the last 15 %, out‑of‑time**.
+**Test set:** a *held-out* synthetic world — 110 customers × 35 days,
+different seed from training, **14,151 transactions, 188 fraud**
+(1.33 %) — scored transaction-by-transaction through the full pipeline
+(classifier + anomaly head + rules + decision engine). Customers live in Indian cities and
+spend in INR. A transaction counts as *stopped* if it is blocked **or** paused for verification.
 
-**Classifier, out‑of‑time test slice:**
-
-| Metric | Value |
+| Metric (full pipeline, default operating point) | Value |
 |---|---|
-| ROC‑AUC | **0.996** |
-| PR‑AUC | **0.89** |
-| Precision / recall @ cost‑optimal threshold | 0.86 / 0.92 |
-| Brier — raw → **calibrated** | 0.0020 → **0.0013** |
+| Fraud caught (recall) | **94.7 %** (95 % CI 91.4 %–97.9 %) |
+| Precision | **43.5 %** — 1.3 false alarms per fraud caught |
+| Genuine transactions stopped | **1.65 %** (outright blocked: 0.029 %) |
+| F1 · MCC | 59.6 % · 0.636 |
+| ROC-AUC · PR-AUC | 0.9732 · 0.8143 (random = 0.01329) |
+| Calibration error (ECE) · Brier | 0.00164 · 0.00407 |
+| Fraud value prevented | 93.7 % of ₹192,234 |
+| Score drift (PSI) once profiles warm | 0.0258 (stable < 0.1) |
+| Latency P50 / P99 (`sentinel.audit`) | 9 ms / 27 ms per transaction on a 2-core cloud VM (~100 txn/s/core) |
 
-**Full pipeline** (3 heads + rules + decision) on a *fresh, unseen world*
-(`python -m sentinel.eval`):
-
-| | Value |
-|---|---|
-| Detection rate (BLOCK/CHALLENGE on fraud) | **81 %** |
-| False‑positive rate (legit blocked) | **0.10 %** |
-| Calibration ECE | **0.009** |
-| PSI (risk blend) vs training reference | 0.013 (stable) |
-| Latency P50 / P99 (`sentinel.audit`) | **4 ms / 11 ms**, ~210 txn/s/core |
-
-**Policy A/B on the same traffic** — neither layer alone gets you there:
-
-| policy | detection | FP rate |
-|---|---|---|
-| rules only | 62 % | 0.10 % |
-| model only | 38 % | 0.00 % |
-| **Sentinel (both)** | **81 %** | 0.10 % |
-
-Per‑scenario recall — classic attacks caught cleanly; the three **adversarial**
-playbooks, built specifically to evade the rules, degrade *honestly* (a
-rules‑only system catches ≈ 0 % of these):
+**Fraud caught by attack type** (three *adversarial* playbooks are built to slip past rules):
 
 | scenario | recall |
 |---|---|
-| account_takeover | 100 % |
-| bust_out | 96 % |
-| slow_drip *(adv.)* | 80 % |
-| card_testing | 80 % |
-| stolen_card_geo | 73 % |
-| amount_just_under *(adv.)* | 70 % |
-| geo_consistent_ato *(adv.)* | 68 % |
+| account_takeover | 100 % (23/23) |
+| card_testing | 100 % (20/20) |
+| geo_consistent_ato *(adv.)* | 100 % (25/25) |
+| slow_drip *(adv.)* | 100 % (56/56) |
+| stolen_card_geo | 100 % (15/15) |
+| bust_out | 86 % (19/22) |
+| amount_just_under *(adv.)* | 74 % (20/27) |
 
-**Fairness** (`sentinel.audit`): no material disparity in detection or
-false‑positive rate across home country or customer spend tier; the check flags
-any slice with FP rate > 1.25× the fairest slice for review.
+**Operating point — the bank's choice.** The default threshold minimises expected cost with a
+missed fraud weighted 25× a false challenge. Other points on the same test set:
 
-> Synthetic training data — the numbers show the pipeline works and is honestly
-> evaluated, not a production claim. The ML core is **also validated on real
-> data**: `python -m sentinel.datasets.fetch ulb` → 284,807 real transactions →
-> out‑of‑time ROC‑AUC **0.92**, calibrated Brier **0.0005**. See
-> [docs/REAL_DATA_VALIDATION.md](docs/REAL_DATA_VALIDATION.md) and
-> [docs/DATA.md](docs/DATA.md) · [docs/MODEL_CARD.md](docs/MODEL_CARD.md).
+| model threshold | recall | genuine stopped | precision |
+|---|---|---|---|
+| 0.0476 (default) | 94.7 % | 1.65 % | 43.5 % |
+| 0.08 | 92.0 % | 0.75 % | 62.2 % |
+| 0.15 | 88.3 % | 0.65 % | 64.6 % |
+| 0.3 | 88.3 % | 0.65 % | 64.8 % |
+| 0.5 | 81.9 % | 0.53 % | 67.5 % |
+
+Set `SENTINEL_MODEL_THRESHOLD` to pick one without retraining (e.g. `0.08` halves customer
+friction for ~3 points of recall at the same expected cost). Re-validate on fresh data.
+
+**Fairness by age:** false-alarm rates differ by at most 0.57 % between
+the 18-25 / 26-40 / 41-60 / 60+ groups. Live per-cohort numbers are on the dashboard
+(`GET /metrics/by_age`); `python -m sentinel.audit` also slices by country, spend tier and channel.
+
+**Honest-evaluation safeguards.** Device / payee / merchant fraud statistics only learn a
+transaction's fraud outcome **72 hours later** (`SENTINEL_LABEL_DELAY_HOURS`), as chargebacks
+and analyst decisions arrive at a real bank — in training and in serving. With outcomes known
+instantly the same test would report 98.4 % recall; with no outcome data at all,
+92.6 %. Transactions paused for verification never become part of a customer's
+"normal" profile, and a customer's own past fraud never taints their own device or card.
+
+> Synthetic test data — the numbers show the pipeline works and is honestly evaluated, not a
+> production claim. Validate on the bank's own labelled history before go-live. The ML core is
+> **also validated on real data**: `python -m sentinel.datasets.fetch ulb` → 284,807 real
+> transactions → out-of-time ROC-AUC **0.92**; see
+> [docs/REAL_DATA_VALIDATION.md](docs/REAL_DATA_VALIDATION.md), [docs/DATA.md](docs/DATA.md) and
+> [docs/MODEL_CARD.md](docs/MODEL_CARD.md).
 
 ---
 
@@ -191,6 +198,21 @@ pytest                                         # 36 tests
 
 ---
 
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SENTINEL_BASIC_AUTH` | off | `user:password` — require a login for the dashboard and API |
+| `SENTINEL_DISABLE_SIMULATOR` | off | `1` — real transactions only (no synthetic traffic / attack buttons) |
+| `SENTINEL_MODEL_THRESHOLD` | learned | operating point — fraud caught vs customers challenged |
+| `SENTINEL_LABEL_DELAY_HOURS` | 72 | when confirmed fraud outcomes reach the entity statistics |
+| `SENTINEL_REDIS_URL` | off | shared state across instances |
+| `GROQ_API_KEY` | off | natural-language Q&A on a case |
+
+Details and a pre-production checklist: [docs/DEPLOY.md](docs/DEPLOY.md#security-and-configuration-for-a-real-deployment).
+
+---
+
 ## Dashboard
 
 - Live decision stream, colour‑coded, with risk bar.
@@ -210,6 +232,16 @@ pytest                                         # 36 tests
   PSI drift indicator** (flips to `alert` during an attack wave).
 - **⚡ / 🎭 attack buttons** — inject a full episode (4 classic + 3 adversarial
   playbooks) against a random real customer and watch Sentinel respond.
+- **Age categorisation** — every transaction carries the customer's age bracket
+  (18-25 / 26-40 / 41-60 / 60+); the **"Who is being affected — by age"** panel
+  shows fraud caught and false-alarm rate per cohort, with a fairness gap.
+- **Add a real transaction** (with optional customer age) or **upload a CSV** —
+  bad rows are rejected with their row number and reason, valid rows are scored,
+  and flagged ones open straight into the explanation pane. Download a template
+  or the full results.
+- **"How good is the model?"** panel — the held-out evaluation: confusion matrix,
+  fraud caught / precision / genuine customers stopped with confidence
+  intervals, ROC-AUC, PR-AUC, and recall per attack type.
 
 ---
 
@@ -225,6 +257,11 @@ pytest                                         # 36 tests
 | `POST /feedback` | `{cust_id, ts, amount, label, kind}` — analyst/chargeback label |
 | `GET /cases?only=alerts` | recent decisions (each carries `summary` + `shadows`) |
 | `POST /simulator/inject/{scenario}` | play an attack episode |
+| `POST /upload/transactions` | `{csv, validate_only}` — bulk-score a CSV (≤ 2,000 rows) with per-row errors |
+| `GET /upload/template.csv` | upload template |
+| `GET /cases/{id}` | one scored case |
+| `GET /metrics/by_age` | decisions, fraud caught and false-alarm rate per age bracket |
+| `GET /evaluation` | the held-out model evaluation report |
 | `WS /ws/stream` | live push of decisions + metrics + drift |
 
 ```bash

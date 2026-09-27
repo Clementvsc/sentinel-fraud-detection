@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import heapq
 import threading
 from collections import deque
 from datetime import datetime, timedelta
@@ -123,9 +124,20 @@ class Metrics:
 
 
 class Engine:
-    def __init__(self, model: FraudModel, autosnapshot: bool = True) -> None:
+    def __init__(self, model: FraudModel, autosnapshot: bool = True,
+                 label_delay_hours: float | None = None) -> None:
         self.model = model
         self.autosnapshot = autosnapshot
+        # How long after a transaction its fraud outcome becomes known to the
+        # entity statistics (device / payee / merchant / card fraud rates).
+        # A bank learns outcomes late — chargebacks, customer reports, analyst
+        # decisions — so by default a transaction's own label is NOT fed into
+        # those statistics when it is scored; confirmed fraud lands only after
+        # this delay. 0 = legacy "outcome known instantly" (an upper bound,
+        # useful only for comparison); 0 selects it.
+        hours = config.LABEL_DELAY_HOURS if label_delay_hours is None else label_delay_hours
+        self.label_delay = timedelta(hours=hours) if hours > 0 else None
+        self._pending_labels: list = []     # heap of (release_ts, seq, entity keys)
         self.profiles: dict[str, ProfileState] = {}
         self.customers: dict = {}
         self.entities = EntityRegistry()
@@ -201,7 +213,8 @@ class Engine:
     # ---- snapshot persistence -----------------------------------
     def _state_blob(self) -> dict:
         return {"profiles": self.profiles, "entities": self.entities,
-                "metrics": self.metrics, "seq": self._seq}
+                "metrics": self.metrics, "seq": self._seq,
+                "pending_labels": list(getattr(self, "_pending_labels", []))}
 
     def _restore_snapshot(self) -> bool:
         blob = self.store.load()
@@ -211,11 +224,20 @@ class Engine:
         self.entities = blob["entities"]
         self.metrics = blob["metrics"]
         self._seq = blob["seq"]
+        self._pending_labels = list(blob.get("pending_labels", []))
+        heapq.heapify(self._pending_labels)
         return True
 
     def persist(self) -> None:
         with self._lock:
             self.store.save(self._state_blob())
+
+    def _release_labels(self, now: datetime) -> None:
+        """Deliver fraud outcomes whose delay has elapsed to the entity stats."""
+        pend = getattr(self, "_pending_labels", None)
+        while pend and pend[0][0] <= now:
+            release_ts, _seq, keys = heapq.heappop(pend)
+            self.entities.confirm_fraud(keys, release_ts)
 
     # ---- feedback ------------------------------------------------
     def record_feedback(self, *, cust_id, ts, amount, label, kind="disposition",
@@ -262,6 +284,7 @@ class Engine:
             txn.setdefault("beneficiary", "")
             txn.setdefault("card_bin", "?")
 
+            self._release_labels(now)
             cid = txn["cust_id"]
             ps = self.profiles.get(cid)
             if ps is None:
@@ -308,16 +331,30 @@ class Engine:
                                  shadows=shadows)
             self.drift.observe(score.risk, allowed=decision.action == "ALLOW")
 
-            if decision.action != "BLOCK":
+            # The customer's behavioural profile learns only from transactions
+            # that actually went through (ALLOW, or REVIEW = allowed and queued
+            # for an analyst). A CHALLENGE is paused pending verification — an
+            # account-takeover attacker typically can't pass it — so treating
+            # it as "normal" let the first stopped attempt teach the profile
+            # that big transfers to the mule are routine, and the attacker's
+            # follow-up transfers then sailed through. Training never lets
+            # fraud update a profile (train.replay), so this also removes a
+            # train/serve mismatch.
+            if decision.action in ("ALLOW", "REVIEW"):
                 ps.update(txn)
             # Entity/graph tracking (device, beneficiary, merchant, BIN fraud
             # history and fraud-ring fan-in/out) always records, even on
             # BLOCK: a blocked fraud attempt is exactly the signal that should
             # mark a device or mule account as compromised for the *next*
-            # transaction that touches it. Only the customer's own behavioural
-            # profile (ps.update, above) skips a blocked attempt, so a stopped
-            # fraud attempt is never mistaken for "normal" for that customer.
-            self.entities.observe(txn, label, now)
+            # transaction that touches it.
+            if self.label_delay is None:
+                self.entities.observe(txn, label, now)
+            else:
+                self.entities.observe(txn, 0, now)
+                if label == 1:
+                    keys = {k: txn.get(k, "") for k in
+                            ("cust_id", "merchant_id", "card_bin", "device_id", "beneficiary")}
+                    heapq.heappush(self._pending_labels, (now + self.label_delay, self._seq, keys))
 
             self._seq += 1
             if self.autosnapshot and self._seq % config.SNAPSHOT_EVERY == 0:

@@ -6,7 +6,7 @@
   throughput. A card network's authorization budget is ~100 ms; Sentinel should
   sit far under that.
 * **Fairness** — detection rate and false-positive rate sliced by protected-ish
-  attributes we *can* measure here (home country, customer spend tier, channel).
+  attributes we *can* measure here (home country, customer spend tier, customer age, channel).
   Flags any slice whose FP rate is >1.25× the best slice (disparate impact).
 """
 from __future__ import annotations
@@ -23,7 +23,9 @@ from .model import FraudModel
 
 
 def _spend_tier(mean: float) -> str:
-    return "low" if mean < 35 else "mid" if mean < 70 else "high"
+    # INR: customers' mean spend per transaction spans ~₹150-₹1,000 (see
+    # datasets.synthetic.generate_customers); split it into thirds (log scale)
+    return "low" if mean < 280 else "mid" if mean < 530 else "high"
 
 
 def _run_world(engine: Engine, n_cust=140, days=40, seed=None):
@@ -47,6 +49,7 @@ def _run_world(engine: Engine, n_cust=140, days=40, seed=None):
             "label": case["label"], "action": case["action"],
             "country": ev["country"], "channel": ev["channel"],
             "tier": tiers.get(ev["cust_id"], "mid"),
+            "age": case.get("age_bracket", "unknown"),
         })
     return rows, np.asarray(lat)
 
@@ -76,7 +79,7 @@ def main() -> None:
     print(f"  (card-network auth budget ~100 ms; headroom {100/np.percentile(lat,99):.0f}x)")
 
     print("\n=== FAIRNESS / DISPARATE IMPACT ===")
-    for key in ("country", "tier", "channel"):
+    for key in ("country", "tier", "age", "channel"):
         st = _slice_stats(rows, key)
         fps = [v["fp_rate"] for v in st.values() if v["n"] > 50]
         base = min(fps) if fps else 0.0

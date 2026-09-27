@@ -69,7 +69,7 @@ start (attach an external Redis via `SENTINEL_REDIS_URL` for continuity).
 npm i -g vercel && vercel        # reads vercel.json + api/requirements.txt
 ```
 
-The explainability path uses the existing classifier and adds no package dependency, keeping the function small. Counterfactual paths are hypothetical reference comparisons, not causal advice.
+`api/requirements.txt` pins scikit-learn / numpy / scipy / joblib to exactly the versions in the root `requirements.txt` — the committed model only unpickles reliably with those. Keep the two files in sync. The explainability path uses the existing classifier and adds no package dependency, keeping the function small. Counterfactual paths are hypothetical reference comparisons, not causal advice.
 
 Public URL: `https://<project>.vercel.app`.
 
@@ -84,9 +84,23 @@ docker run -p 8000:8000 sentinel
 docker compose up --scale sentinel=2
 ```
 
-## Note on public exposure
+## Security and configuration for a real deployment
 
-The demo has no auth and the simulator can be driven by anyone with the URL.
-That's fine for a hackathon demo on synthetic data. Before putting anything real
-behind it, add authentication and rate‑limiting, and disable the `/simulator/*`
-routes.
+The public demo is open by design. Before anything real goes behind it, set:
+
+| Variable | Effect |
+|---|---|
+| `SENTINEL_BASIC_AUTH=user:password` | Every page and API route requires a login (HTTP Basic; the browser shows a prompt, then a 12-hour signed session cookie also covers the live WebSocket). `/health` stays open for platform health checks but reports only `{"status": ...}` to anonymous callers. Use a long random password and HTTPS (all hosts above serve HTTPS). |
+| `SENTINEL_DISABLE_SIMULATOR=1` | No synthetic traffic or attack injection: the background simulator never starts and `/tick`, `/simulator/*`, `/replay/blended` return 403. The dashboard hides those controls and shows only real transactions (`/score`, CSV upload, `/replay`). |
+| `SENTINEL_MODEL_THRESHOLD=0.08` | Operating point: the model probability at or above which a transaction is challenged. Unset = the learned cost-minimising value. See the trade-off table in [EVALUATION.md](EVALUATION.md). |
+| `SENTINEL_LABEL_DELAY_HOURS=72` | How long after a transaction its confirmed fraud outcome reaches the entity statistics (default 72). |
+| `SENTINEL_REDIS_URL` | Shared state across instances / restarts (queue, feedback, warm profiles). |
+| `GROQ_API_KEY` | Enables the natural-language Q&A on a case ([QA_SETUP.md](QA_SETUP.md)); everything else runs without it. |
+
+On Vercel: Project → Settings → Environment Variables, then redeploy. On Render /
+Fly / Docker: set them as service environment variables.
+
+Still the bank's responsibility before production: single sign-on / per-analyst
+accounts instead of one shared login, rate-limiting, audit logging to the bank's
+SIEM, data-residency review, and validation of the model on the bank's own
+labelled history (see [MODEL_CARD.md](MODEL_CARD.md)).
