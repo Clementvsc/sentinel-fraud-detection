@@ -1,8 +1,8 @@
 /* Sentinel dashboard — friendly front, full functionality underneath. */
 (() => {
   const $ = (s) => document.querySelector(s);
-  const money = (x) => "$" + Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const money0 = (x) => "$" + Math.round(Number(x)).toLocaleString();
+  const money = (x) => "₹" + Number(x).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money0 = (x) => "₹" + Math.round(Number(x)).toLocaleString("en-IN");
   const pct = (x, d) => (x * 100).toFixed(d ?? (x >= 0.1 ? 0 : 1)) + "%";
 
   const I = {
@@ -281,16 +281,6 @@
           <button class="no" data-fb="0">${I.down} It was fine</button>
         </div>
       </div>
-      <details class="block qa" id="qaBlock"><summary>💬 Ask about this transaction</summary>
-        <div class="inner">
-          <div class="hint" style="margin-bottom:8px">Type any question about this specific transaction. Answered by a real LLM (Groq) grounded strictly in this case's own decision, rules, and feature data — it will say so if something is outside that data, not guess.</div>
-          <form id="qaForm" class="qaform">
-            <input type="text" id="qaInput" placeholder="e.g. why was this flagged? would it change if the amount was smaller?" maxlength="500" />
-            <button type="submit">Ask</button>
-          </form>
-          <div id="qaLog" class="qalog"></div>
-        </div>
-      </details>
       <details class="block whatif"><summary>Try changing the transaction</summary>
         <div class="inner">
           <div class="wrow">amount ×<input type="range" id="wmult" min="0.1" max="5" step="0.1" value="1"><b id="wmultv">1.0×</b></div>
@@ -312,16 +302,6 @@
           <div class="scorebox"><div class="l">Fraud proba</div><div class="v">${pct(c.fraud_proba)}</div></div>
           <div class="scorebox"><div class="l">Novelty</div><div class="v">${pct(c.anomaly)}</div></div>
         </div>
-        <details class="block" id="robustBlock"><summary>🛡️ Adversarial robustness sweep</summary>
-          <div class="inner">
-            <div class="hint" style="margin-bottom:8px">Sweeps ONE feature across its real-world range, holding everything else fixed, and re-scores at every step with the model's real pipeline — the same thing an attacker probing for a blind spot would do by trial and error. A single clean flip means a well-defined decision boundary; several flips in a row mean a jagged, more gameable one.</div>
-            <div class="rrow">
-              <select id="robustFeature"></select>
-              <button class="ghost" id="robustRun">Run sweep</button>
-            </div>
-            <div id="robustResult"></div>
-          </div>
-        </details>
         <details class="block"><summary>Why — signal breakdown</summary><div class="inner">
           <ul class="reasons">${c.reasons.map((r) => `<li>${r}</li>`).join("")}</ul>
           ${counterfactualCard(c.counterfactual)}
@@ -335,128 +315,6 @@
       b.addEventListener("click", () => sendFeedback(c, +b.dataset.fb)));
     wireWhatIf(c);
     loadGraph(c.id);
-    wireQA(c);
-    wireRobustness(c);
-  }
-
-  /* ---------------- natural-language Q&A ---------------- */
-  function wireQA(c) {
-    const form = $("#qaForm"), input = $("#qaInput"), log = $("#qaLog");
-    if (!form) return;
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const question = input.value.trim();
-      if (!question) return;
-      const qEl = document.createElement("div");
-      qEl.className = "qaturn";
-      qEl.innerHTML = `<div class="qaq">${escapeHtml(question)}</div><div class="qaa qaloading">Thinking…</div>`;
-      log.appendChild(qEl);
-      log.scrollTop = log.scrollHeight;
-      input.value = ""; input.disabled = true;
-      try {
-        const r = await fetch("/qa", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ case_id: c.id, question }) });
-        const j = await r.json();
-        const a = qEl.querySelector(".qaa");
-        a.classList.remove("qaloading");
-        if (!r.ok) {
-          a.classList.add("qaerr");
-          a.textContent = j.detail || "Couldn't get an answer.";
-        } else {
-          a.textContent = j.answer;
-        }
-      } catch {
-        const a = qEl.querySelector(".qaa");
-        a.classList.remove("qaloading"); a.classList.add("qaerr");
-        a.textContent = "Couldn't reach the Q&A service.";
-      } finally {
-        input.disabled = false; input.focus();
-        log.scrollTop = log.scrollHeight;
-      }
-    });
-  }
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
-  }
-
-  /* ---------------- adversarial robustness sweep ---------------- */
-  const ACTION_COLOR = { ALLOW: "#34d399", REVIEW: "#fbbf24", CHALLENGE: "#fb923c", BLOCK: "#f87171" };
-  let robustFeaturesCache = null, robustChart = null;
-  async function wireRobustness(c) {
-    const sel = $("#robustFeature"), btn = $("#robustRun"), out = $("#robustResult");
-    if (!sel || !btn) return;
-    if (!robustFeaturesCache) {
-      try { robustFeaturesCache = (await (await fetch("/robustness/features")).json()).features; }
-      catch { robustFeaturesCache = ["amount", "new_device", "merchant_fraud_rate"]; }
-    }
-    sel.innerHTML = robustFeaturesCache.map((f) =>
-      `<option value="${f}" ${f in (c.features || {}) ? "" : "disabled"}>${f}</option>`).join("");
-
-    const run = async () => {
-      const feature = sel.value;
-      btn.disabled = true; btn.textContent = "Sweeping…";
-      out.innerHTML = "";
-      try {
-        const r = await fetch(`/robustness/${c.id}?feature=${encodeURIComponent(feature)}&steps=17`);
-        const d = await r.json();
-        if (!r.ok) { out.innerHTML = `<div class="hint">${d.detail || "Couldn't run the sweep."}</div>`; return; }
-        renderRobustChart(d);
-      } catch {
-        out.innerHTML = `<div class="hint">Couldn't reach the sweep endpoint.</div>`;
-      } finally {
-        btn.disabled = false; btn.textContent = "Run sweep";
-      }
-    };
-    btn.onclick = run;
-  }
-
-  function renderRobustChart(d) {
-    const out = $("#robustResult");
-    out.innerHTML = `
-      <div class="rsummary">
-        Base: <span class="verdict v-${d.base_action}">${I[d.base_action]}${d.base_action}</span>
-        at <b>${feat3(d.feature, d.base_value)}</b> →
-        ${d.n_decision_flips === 0
-          ? "the decision never changes across this whole range — a stable boundary here."
-          : d.n_decision_flips === 1
-            ? "exactly one clean flip across the range — a well-defined boundary."
-            : `${d.n_decision_flips} flips across the range — a jagged, more easily-gamed boundary.`}
-      </div>
-      <canvas id="robustCanvas" height="140"></canvas>`;
-    if (robustChart) { robustChart.destroy(); robustChart = null; }
-    const ctx = $("#robustCanvas");
-    if (!ctx) return;
-    robustChart = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels: d.points.map((p) => feat3(d.feature, p.value)),
-        datasets: [{
-          label: "risk",
-          data: d.points.map((p) => p.risk),
-          borderColor: "#5aa2ff",
-          backgroundColor: "rgba(90,162,255,.12)",
-          pointBackgroundColor: d.points.map((p) => ACTION_COLOR[p.action] || "#93a0b4"),
-          pointRadius: 4,
-          fill: true, tension: .25,
-        }],
-      },
-      options: {
-        responsive: true, animation: false,
-        scales: {
-          x: { ticks: { color: "#93a0b4", maxRotation: 0, autoSkip: true }, grid: { display: false } },
-          y: { ticks: { color: "#93a0b4" }, grid: { color: "#262e3d" }, min: 0, max: 1 },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { afterLabel: (ctx) => `decision: ${d.points[ctx.dataIndex].action}` } },
-        },
-      },
-    });
-  }
-  function feat3(name, v) {
-    if (name === "amount") return "$" + Math.round(v).toLocaleString();
-    if (Number.isInteger(v) || Math.abs(v) >= 10) return Math.round(v).toString();
-    return (+v).toFixed(2);
   }
 
   /* ---------------- entity graph (forensics) ---------------- */
@@ -545,12 +403,10 @@
       b.addEventListener("click", () => { b.classList.toggle("on"); st[b.dataset.k] = b.classList.contains("on") ? 1 : 0; run(); }));
   }
 
-  function currentAnalyst() { return ($("#qAnalyst")?.value || "").trim() || "unassigned"; }
-
   async function sendFeedback(c, label) {
     const r = await fetch("/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cust_id: c.cust_id, ts: c.ts, amount: c.amount, label,
-        kind: label ? "chargeback" : "disposition", note: c.merchant_id, analyst: currentAnalyst() }) });
+        kind: label ? "chargeback" : "disposition", note: c.merchant_id }) });
     const j = await r.json().catch(() => ({}));
     const online = j.recorded?.online_status;
     let msg = `Recorded: ${c.cust_id} ${money(c.amount)} → ${label ? "fraud" : "legitimate"}. The payee/device risk updated and the next retrain will use it.`;
@@ -559,62 +415,7 @@
         ? ` Online correction layer: ${online.updates} labels seen, now actively adjusting similar transactions (±${pct(online.max_adjustment,0)} max).`
         : ` Online correction layer: ${online.updates}/5 labels seen — needs a few more before it starts adjusting.`;
     }
-    if (j.recorded?.queue_status) msg += ` Case queue: marked resolved.`;
     toast(msg);
-    loadQueue();
-  }
-
-  /* ---------------- case queue (multi-analyst) ---------------- */
-  async function loadQueue() {
-    if (!$("#queueSection")) return;
-    let j;
-    try { j = await (await fetch("/queue?status=open")).json(); }
-    catch { return; }
-    const claimedR = await fetch("/queue?status=claimed").then((r) => r.json()).catch(() => ({ items: [] }));
-    const items = [...j.items, ...claimedR.items].sort((a, b) => b.queued_at - a.queued_at);
-    $("#qcounts").innerHTML = `<span class="qc open">${j.counts.open} open</span>
-      <span class="qc claimed">${j.counts.claimed} claimed</span>
-      <span class="qc resolved">${j.counts.resolved} resolved today</span>`;
-    if (!items.length) {
-      $("#qlist").innerHTML = `<div class="hint" style="padding:14px 0">Queue is empty — no REVIEW or CHALLENGE cases waiting right now.</div>`;
-      return;
-    }
-    $("#qlist").innerHTML = items.map((it) => {
-      const c = it.case || {};
-      const mine = it.claimed_by === currentAnalyst();
-      return `<div class="qrow" data-case="${it.case_id}">
-        <div class="qmain">
-          <span class="verdict v-${c.action}">${I[c.action] || ""}${c.action}</span>
-          <b>${money(c.amount)}</b>
-          <span class="muted">${c.cust_id} · ${c.merchant_id || ""} · ${c.city || ""}</span>
-        </div>
-        <div class="qside">
-          ${it.status === "open"
-            ? `<button class="ghost qclaim">Claim</button>`
-            : it.status === "claimed"
-              ? `<span class="qwho">${mine ? "you" : it.claimed_by}</span>
-                 ${mine ? `<button class="ghost qrelease">Release</button>` : ""}`
-              : ""}
-        </div>
-      </div>`;
-    }).join("");
-    $("#qlist").querySelectorAll(".qrow").forEach((row) => {
-      const id = +row.dataset.case;
-      row.querySelector(".qclaim")?.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const r = await fetch(`/queue/${id}/claim`, { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ analyst: currentAnalyst() }) });
-        if (!r.ok) { const j = await r.json().catch(() => ({})); toast(`Couldn't claim: ${j.detail || "already taken"}`); }
-        loadQueue();
-      });
-      row.querySelector(".qrelease")?.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        await fetch(`/queue/${id}/release`, { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ analyst: currentAnalyst() }) });
-        loadQueue();
-      });
-      row.addEventListener("click", () => selectCase(id));
-    });
   }
 
   /* ---------------- live data: websocket + polling fallback ---------------- */
@@ -629,11 +430,8 @@
       if (selected === msg.case.id) selectCase(msg.case.id);
     } else if (msg.type === "metrics") {
       renderHero(msg.metrics, msg.drift); renderPolicy(msg.metrics.policy_comparison);
-    } else if (msg.type === "queue") {
-      loadQueue();
     }
   }
-  setInterval(loadQueue, 6000); // periodic refresh so another analyst's claim/resolve shows up even without a push
   function setLive(on, txt) { $("#pulse").classList.toggle("on", on); $("#livetxt").textContent = txt; }
 
   function startPolling() {
@@ -745,5 +543,4 @@
   fetch("/health").then((r) => r.json()).then((h) => {
     if (h.serverless) startPolling(); else connect();
   }).catch(connect);
-  loadQueue();
 })();

@@ -88,7 +88,7 @@ def main() -> None:
           f"(BLOCK or CHALLENGE on labelled fraud)")
     print(f"  false-positive rate: {m['false_positive_rate']*100:.3f}%  "
           f"({m['false_positives']} legit txns blocked)")
-    print(f"  exposure prevented: ${m['amount_saved']:,.0f}")
+    print(f"  exposure prevented: ₹{m['amount_saved']:,.0f}")
 
     print("\n  per-scenario recall:")
     for s in sorted(scen_tot):

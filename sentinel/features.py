@@ -45,8 +45,14 @@ FEATURE_COLUMNS = BEHAVIOUR_FEATURES + SEQUENCE_FEATURES + ENTITY_FEATURES
 
 
 def _token(txn: dict) -> str:
-    """Discrete behaviour token: (category, channel, log-amount bucket)."""
-    bucket = min(6, int(math.log1p(max(float(txn.get("amount", 0.0)), 0.0)) / 1.1))
+    """Discrete behaviour token: (category, channel, log-amount bucket).
+
+    Divisor tuned for INR amounts (bucket 6 saturates around ~22,000, a
+    genuinely large single transaction) so the bucket still discriminates
+    across the realistic spend range instead of most transactions collapsing
+    into the top bucket.
+    """
+    bucket = min(6, int(math.log1p(max(float(txn.get("amount", 0.0)), 0.0)) / 1.43))
     return f"{txn.get('mcc', '?')}|{txn.get('channel', '?')}|{bucket}"
 
 

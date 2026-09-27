@@ -45,20 +45,6 @@
     <div class="pbars" id="pbars"></div>
   </section>
 
-  <section class="queue analyst-only" id="queueSection">
-    <div class="hd">
-      <h3>Case queue — multi-analyst review</h3>
-      <div class="qcounts" id="qcounts"></div>
-    </div>
-    <div class="lead">Every REVIEW / CHALLENGE case lands here for a human to work. Claim a case before you act on it — resolving it from here (or from the feed) marks it done for the whole team, so nobody double-works it.</div>
-    <div class="qme">
-      <label>Working as
-        <input type="text" id="qAnalyst" placeholder="your name" value="analyst_1" />
-      </label>
-    </div>
-    <div class="qlist" id="qlist"></div>
-  </section>
-
   <div class="grid">
     <div class="card">
       <div class="hd"><h3>Live transactions</h3><span class="count" id="feedcount">0</span></div>
@@ -94,7 +80,7 @@
           <form id="manualForm" class="mform">
             <div class="mrow">
               <label>Customer ID<input type="text" id="mCust" placeholder="e.g. my_test_customer" required></label>
-              <label>Amount ($)<input type="number" id="mAmount" placeholder="120.00" min="0.01" step="0.01" required></label>
+              <label>Amount (₹)<input type="number" id="mAmount" placeholder="1200.00" min="0.01" step="0.01" required></label>
             </div>
             <div class="mrow">
               <label>Merchant<input type="text" id="mMerchant" placeholder="e.g. Loblaws"></label>

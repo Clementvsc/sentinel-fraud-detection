@@ -4,7 +4,10 @@ Design goals versus a naive generator:
 
 * fraud amounts and merchants overlap heavily with legitimate spend, so the
   model has to use context (velocity, geo, entity risk, login history), not a
-  dollar cut-off;
+  cut-off on the raw amount;
+* amounts are denominated in INR, tuned to look like real UPI/card spend in
+  India (per-transaction amounts roughly ₹50-₹10,000+, with a long tail for
+  big-ticket buys and fraud spikes);
 * three explicit **adversarial** playbooks that try to evade obvious rules:
   ``amount_just_under``, ``slow_drip``, ``geo_consistent_ato``;
 * **fraud rings** — several victims whose fraud shares a device or a mule
@@ -73,7 +76,8 @@ def generate_customers(n: int, seed: int) -> List[Customer]:
             cust_id=f"C{i:05d}", home_city=city, home_country=country,
             home_lat=lat, home_lon=lon,
             account_open=start - timedelta(days=rng.randint(90, 2400)),
-            spend_mean=round(math.exp(rng.uniform(3.1, 4.6)), 2),
+            # INR: mean per-transaction spend ~₹150-₹1,000 (realistic UPI/card range)
+            spend_mean=round(math.exp(rng.uniform(5.0, 6.9)), 2),
             daily_lambda=round(rng.uniform(1.4, 6.0), 2),
             device_id=f"dev-{i:05d}-a",
             card_bin=f"{rng.randint(400000, 499999)}",

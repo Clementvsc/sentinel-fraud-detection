@@ -61,7 +61,7 @@ def evaluate_rules(feat: dict, txn: dict) -> list[RuleHit]:
         ))
 
     if (f["new_device"] >= 1.0 and f["channel_online"] >= 1.0
-            and f["amount"] > 500 and f["failed_logins_1h"] >= 1.0):
+            and f["amount"] > 5000 and f["failed_logins_1h"] >= 1.0):
         hits.append(RuleHit(
             "new_device_online_spend", "challenge",
             "Large online purchase from an unrecognised device after a failed login",
@@ -101,7 +101,7 @@ def evaluate_rules(feat: dict, txn: dict) -> list[RuleHit]:
             "Large transfer to a payee this customer has never sent to before",
         ))
 
-    if (f["amount_z"] > 4.0 and f["amount"] > 150
+    if (f["amount_z"] > 4.0 and f["amount"] > 1500
             and (f["new_merchant"] >= 1.0 or f["is_foreign"] >= 1.0 or f["high_risk_mcc"] >= 1.0)
             and not any(h.code == "new_country_large_amount" for h in hits)):
         hits.append(RuleHit(

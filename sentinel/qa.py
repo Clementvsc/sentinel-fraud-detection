@@ -4,7 +4,7 @@ The rest of Sentinel is deliberately LLM-free (narrate.py composes text from
 real feature values with no model call, so it's free and always consistent
 with the decision). This module is the one deliberate exception: a judge or
 analyst can type an open-ended question ("why was this blocked?", "would it
-still block if the amount was $50?") and get a real, flexible answer.
+still block if the amount was ₹500?") and get a real, flexible answer.
 
 To keep that honest, the LLM is never allowed to freelance. Every call is
 grounded in the *exact* case dict Sentinel already produced — decision,
