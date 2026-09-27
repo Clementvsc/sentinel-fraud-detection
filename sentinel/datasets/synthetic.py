@@ -58,7 +58,26 @@ class Customer:
     daily_lambda: float
     device_id: str
     card_bin: str
+    age: int = 35
     favorites: Dict[str, List[str]] = field(default_factory=dict)
+
+
+# Age brackets used for both display (age is a real, meaningful transaction
+# dimension for a bank — spend patterns and fraud typologies genuinely differ
+# by age cohort, e.g. elder-targeted social-engineering fraud vs. young-adult
+# account-takeover) and for a fairness/disparate-impact check (a banking-grade
+# model needs to be checked for age-based disparities, not just overall
+# accuracy).
+AGE_BRACKETS = [
+    ("18-25", 18, 25), ("26-40", 26, 40), ("41-60", 41, 60), ("60+", 61, 100),
+]
+
+
+def age_bracket(age: int) -> str:
+    for label, lo, hi in AGE_BRACKETS:
+        if lo <= age <= hi:
+            return label
+    return "unknown"
 
 
 def _jitter(lat, lon, rng, km=12.0):
@@ -66,8 +85,49 @@ def _jitter(lat, lon, rng, km=12.0):
     return lat + rng.uniform(-d, d), lon + rng.uniform(-d, d)
 
 
+# Realistic adult banking-population age mix (not uniform — young adults are
+# under-represented relative to prime-working-age and older cohorts, matching
+# real retail-banking demographics). Weights sum to 1.0 across AGE_BRACKETS.
+_AGE_BRACKET_WEIGHTS = [0.14, 0.40, 0.32, 0.14]   # 18-25, 26-40, 41-60, 60+
+
+
+def _sample_age(rng: random.Random) -> int:
+    _, lo, hi = AGE_BRACKETS[rng.choices(range(len(AGE_BRACKETS)), weights=_AGE_BRACKET_WEIGHTS, k=1)[0]]
+    return rng.randint(lo, min(hi, 90))
+
+
+def age_for_external_id(cust_id: str) -> int:
+    """Deterministic (not random-per-call) age for a customer that has no
+    Customer record at all — i.e. one that arrived from a real-data CSV feed
+    (upi_*, ps_* etc. from csv_adapter.py) rather than sentinel's own
+    generate_customers(). Those datasets carry no age column, so there is no
+    real age to report; we still need *some* stable value so the same
+    cust_id always reports the same age/bracket across repeated /replay
+    calls (a customer can't literally change age bracket between two
+    transactions a minute apart), instead of either crashing on a missing
+    field or emitting a fresh random age every time. Seeded from a hash of
+    the id itself (not global RNG state), so it is reproducible per id and
+    independent of call order or how many other ids were seen first."""
+    h = 0
+    for ch in cust_id:
+        h = (h * 131 + ord(ch)) & 0xFFFFFFFF
+    rng = random.Random(h)
+    return _sample_age(rng)
+
+
 def generate_customers(n: int, seed: int) -> List[Customer]:
     rng = random.Random(seed)
+    # Ages are drawn from a SEPARATE, independently-seeded RNG on purpose.
+    # Drawing them from `rng` would consume draws from the shared sequence and
+    # shift every subsequent value (favorites, and through them the entire
+    # generated event stream: different amounts, different event counts, a
+    # different number of injected fraud cases). That would silently
+    # invalidate every seed-dependent expectation in the project — the trained
+    # model artifact, the drift reference distribution, and the seeded tests —
+    # for a field that has nothing to do with them. Keeping age on its own
+    # stream means adding it changes *only* age: every pre-existing seeded
+    # output stays bit-for-bit identical.
+    age_rng = random.Random(seed ^ 0x4147_4553)     # "AGES"
     start = datetime(2025, 1, 1)
     out: List[Customer] = []
     for i in range(n):
@@ -81,6 +141,7 @@ def generate_customers(n: int, seed: int) -> List[Customer]:
             daily_lambda=round(rng.uniform(1.4, 6.0), 2),
             device_id=f"dev-{i:05d}-a",
             card_bin=f"{rng.randint(400000, 499999)}",
+            age=_sample_age(age_rng),
         )
         c.favorites = {
             mcc: [f"{mcc}_{c.cust_id}_{k}" for k in range(rng.randint(2, 5))]
@@ -92,6 +153,7 @@ def generate_customers(n: int, seed: int) -> List[Customer]:
 
 def _mk_txn(cust, ts, *, amount, mcc, channel, merchant_id, country, city, lat, lon,
             device_id, label=0, beneficiary="", scenario=None):
+    age = getattr(cust, "age", 35)
     return {
         "type": "txn", "cust_id": cust.cust_id, "ts": ts,
         "amount": round(float(amount), 2), "mcc": mcc, "channel": channel,
@@ -99,6 +161,7 @@ def _mk_txn(cust, ts, *, amount, mcc, channel, merchant_id, country, city, lat, 
         "country": country, "city": city,
         "lat": round(lat, 4), "lon": round(lon, 4),
         "device_id": device_id, "card_bin": cust.card_bin, "label": int(label),
+        "cust_age": age, "age_bracket": age_bracket(age),
         **({"scenario": scenario} if scenario else {}),
     }
 

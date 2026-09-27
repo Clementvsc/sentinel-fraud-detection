@@ -14,7 +14,7 @@ from collections import deque
 from datetime import datetime, timedelta
 
 from . import config
-from .datasets import SyntheticSource, generate_customers
+from .datasets import SyntheticSource, generate_customers, age_bracket, age_for_external_id
 from .decision import decide, shadow_actions
 from .drift import DriftMonitor
 from .entities import EntityRegistry
@@ -268,6 +268,23 @@ class Engine:
                 ps = self.profiles[cid] = ProfileState(
                     cid, txn["country"], float(txn["lat"]), float(txn["lon"]), now)
 
+            # Age/age-bracket: the synthetic generator already stamps every
+            # event it produces with cust_age/age_bracket (see
+            # datasets/synthetic.py::_mk_txn). Real-data feeds (upi/paysim via
+            # csv_adapter.py, and anything replayed through /replay or
+            # /replay/blended) have no source age column, so txn won't carry
+            # these keys — fall back to the known Customer record if this
+            # cust_id has one (synthetic roster), else to a deterministic
+            # hash-of-id age so the same real cust_id always reports the same
+            # bracket across repeated calls instead of a fresh random value
+            # or a crash on a missing field.
+            if "cust_age" in txn:
+                cust_age = int(txn["cust_age"])
+            else:
+                known = self.customers.get(cid)
+                cust_age = known.age if known is not None else age_for_external_id(cid)
+            cust_age_bracket = txn.get("age_bracket") or age_bracket(cust_age)
+
             # a late analyst/chargeback verdict overrides the demo label
             fb = self.feedback.label_for(cid, now, txn["amount"])
             label = fb if fb is not None else int(txn.get("label", 0))
@@ -314,6 +331,7 @@ class Engine:
                 "id": self._seq, "ts": now.isoformat(),
                 "epoch_ms": int(now.timestamp() * 1000),
                 "cust_id": cid, "amount": round(float(txn["amount"]), 2),
+                "cust_age": cust_age, "age_bracket": cust_age_bracket,
                 "mcc": txn["mcc"], "channel": txn["channel"],
                 "merchant_id": txn["merchant_id"], "beneficiary": txn.get("beneficiary", ""),
                 "device_id": txn.get("device_id", "?"), "card_bin": txn.get("card_bin", "?"),

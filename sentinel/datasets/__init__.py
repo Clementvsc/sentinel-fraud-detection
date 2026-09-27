@@ -11,7 +11,10 @@ transaction dump (Kaggle ULB / IEEE-CIS / Sparkov, an open-banking export, ...).
 from __future__ import annotations
 
 from .. import config
-from .synthetic import SyntheticSource, generate_customers, FRAUD_PLAYBOOKS, sample_legit_txn
+from .synthetic import (
+    SyntheticSource, generate_customers, FRAUD_PLAYBOOKS, sample_legit_txn,
+    age_bracket, age_for_external_id, AGE_BRACKETS,
+)
 
 
 def load_events(source: str | None = None, **kw):
@@ -31,4 +34,5 @@ def load_events(source: str | None = None, **kw):
 __all__ = [
     "load_events", "SyntheticSource", "generate_customers",
     "FRAUD_PLAYBOOKS", "sample_legit_txn",
+    "age_bracket", "age_for_external_id", "AGE_BRACKETS",
 ]
