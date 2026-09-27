@@ -541,6 +541,30 @@
     });
   });
 
+  /* ------------- blended real+synthetic replay -------------- */
+  $("#blendBtn")?.addEventListener("click", async (e) => {
+    const btn = e.target, status = $("#blendStatus"), original = btn.textContent;
+    btn.disabled = true; btn.textContent = "Replaying…";
+    try {
+      const r = await fetch("/replay/blended", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ real_schema: "upi", limit: 100, real_share: 0.5 }) });
+      const j = await r.json();
+      if (!r.ok) {
+        status.innerHTML = `No dataset found yet. ${j.detail || "See docs/DATA.md to download one."}`;
+        return;
+      }
+      if (j.errors && j.errors.length) {
+        status.innerHTML = `Scored ${j.scored}/${j.requested} — <b>${j.errors.length} row(s) errored</b> (see console).`;
+        console.error("Blended replay errors:", j.errors);
+        toast(`Blended replay hit ${j.errors.length} error(s) — check the browser console.`);
+      } else {
+        status.textContent = `Scored ${j.scored}/${j.requested} with zero errors — ${j.real_scored} real UPI + ${j.synth_scored} synthetic, merged chronologically (${j.real_cursor}/${j.real_total_rows} real rows used so far).`;
+        toast(`Streamed ${j.scored} blended transactions (real + synthetic) into the live feed — no errors.`);
+      }
+    } catch { status.textContent = "Couldn't reach the blended replay API."; }
+    finally { btn.disabled = false; btn.textContent = original; }
+  });
+
 
   /* ---------------- boot ---------------- */
   fetch("/health").then((r) => r.json()).then((h) => {

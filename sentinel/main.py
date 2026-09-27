@@ -52,6 +52,13 @@ class ReplayIn(BaseModel):
     speed: int = 15                # rows scored per broadcast batch (visual pacing only)
 
 
+class BlendIn(BaseModel):
+    real_schema: str = "upi"       # which real dataset to draw from (datasets/csv_adapter.py)
+    real_path: str | None = None   # defaults to data/<real_schema>.csv
+    limit: int = 200               # total transactions in the combined batch
+    real_share: float = 0.5        # fraction of `limit` drawn from the real dataset
+
+
 class WhatIfIn(BaseModel):
     case_id: int
     overrides: dict[str, float] = {}     # feature name -> value, plus "amount_mult"
@@ -248,6 +255,111 @@ def replay_status() -> dict:
                 found.append({"schema": schema, "path": str(p), "size_mb": round(p.stat().st_size / 1e6, 1)})
                 break
     return {"available": found, "data_dir": str(data_dir)}
+
+
+@app.post("/replay/blended")
+async def replay_blended(r: BlendIn) -> dict:
+    """Stream ONE combined transaction feed made of real, historical rows
+    (default: the real Indian UPI export) interleaved with fresh synthetic
+    INR traffic from the same simulator the ambient feed uses — merged into
+    a single chronological stream and scored through the exact same
+    engine.process() path as everything else, one row at a time, so a
+    failure on any single row is reported rather than silently dropped.
+
+    This is deliberately NOT "two datasets glued end to end": every event
+    (real or synthetic) is timestamped, the two sources are merge-sorted by
+    that timestamp, and the result is scored in that single chronological
+    order — the same way a real production feed would see real and any
+    newly-onboarded traffic arrive interleaved, not as two separate blocks.
+    """
+    import random
+    from pathlib import Path
+    from datetime import timedelta
+    from .datasets.csv_adapter import load_csv_events
+    from .datasets import generate_customers, sample_legit_txn
+
+    csv_path = Path(r.real_path) if r.real_path else (config.ROOT.parent / "data" / f"{r.real_schema}.csv")
+    if not csv_path.exists():
+        raise HTTPException(
+            404,
+            f"no real dataset at {csv_path}. See docs/DATA.md — the 'upi' schema "
+            f"is already committed at data/upi.csv and needs no download.",
+        )
+
+    limit = max(1, min(r.limit, 2000))
+    real_share = max(0.0, min(r.real_share, 1.0))
+    n_real = round(limit * real_share)
+    n_synth = limit - n_real
+
+    STATE.setdefault("_replay_cursor", {})
+    STATE.setdefault("_replay_cache", {})
+    cache_key = str(csv_path)
+    cursor = STATE["_replay_cursor"].get(cache_key, 0)
+    events = STATE["_replay_cache"].get(cache_key)
+    if events is None:
+        events = load_csv_events(cache_key, r.real_schema)
+        STATE["_replay_cache"][cache_key] = events
+
+    real_batch = [dict(e) for e in events[cursor: cursor + n_real]]
+    for e in real_batch:
+        e["scenario"] = f"real:{r.real_schema}"
+        e["_source"] = "real"
+    STATE["_replay_cursor"][cache_key] = cursor + len(real_batch)
+
+    # Fresh synthetic INR traffic, timestamped across the same window the
+    # real batch spans (or "now" if the real batch is empty/exhausted) so the
+    # merge-sort actually interleaves them instead of one block trailing the
+    # other.
+    eng = _engine()
+    STATE.setdefault("_blend_customers", generate_customers(200, seed=config.RUNTIME_SEED + 7))
+    STATE.setdefault("_blend_rng", random.Random(config.RUNTIME_SEED + 7))
+    customers = STATE["_blend_customers"]
+    rng = STATE["_blend_rng"]
+
+    if real_batch:
+        t_lo, t_hi = real_batch[0]["ts"], real_batch[-1]["ts"]
+        span = max((t_hi - t_lo).total_seconds(), 60.0)
+    else:
+        t_lo, span = datetime.utcnow(), 3600.0
+
+    synth_batch = []
+    for _ in range(n_synth):
+        cust = rng.choice(customers)
+        offset = rng.uniform(0.0, span)
+        ts = t_lo + timedelta(seconds=offset)
+        ev = sample_legit_txn(cust, ts, rng)
+        ev["scenario"] = "synthetic:inr"
+        ev["_source"] = "synthetic"
+        synth_batch.append(ev)
+
+    combined = sorted(real_batch + synth_batch, key=lambda e: e["ts"])
+
+    cases, errors = [], []
+    real_scored = synth_scored = 0
+    for i, ev in enumerate(combined):
+        source = ev.pop("_source", "unknown")
+        try:
+            case = eng.process(dict(ev))
+        except Exception as exc:  # noqa: BLE001 — surfaced to the caller, never swallowed
+            errors.append({"index": i, "cust_id": ev.get("cust_id"),
+                            "scenario": ev.get("scenario"), "source": source, "error": str(exc)})
+            continue
+        cases.append(case)
+        real_scored += source == "real"
+        synth_scored += source == "synthetic"
+        await hub.broadcast({"type": "case", "case": case})
+
+    await hub.broadcast({"type": "metrics", "metrics": eng.metrics_snapshot(),
+                          "drift": eng.drift_status()})
+
+    return {
+        "requested": limit, "real_requested": n_real, "synth_requested": n_synth,
+        "real_scored": real_scored, "synth_scored": synth_scored,
+        "scored": len(cases), "errors": errors,
+        "real_source": str(csv_path), "real_cursor": STATE["_replay_cursor"][cache_key],
+        "real_total_rows": len(events),
+        "real_exhausted": STATE["_replay_cursor"][cache_key] >= len(events),
+    }
 
 
 @app.get("/metrics")
