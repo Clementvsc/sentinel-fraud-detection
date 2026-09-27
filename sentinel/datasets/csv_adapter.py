@@ -4,6 +4,7 @@
     SENTINEL_DATA=/path/fraudTrain.csv          SENTINEL_CSV_SCHEMA=sparkov
     SENTINEL_DATA=/path/ieee_train.csv          SENTINEL_CSV_SCHEMA=ieee
     SENTINEL_DATA=/path/upi_fraud.csv           SENTINEL_CSV_SCHEMA=upi
+    SENTINEL_DATA=/path/paysim.csv              SENTINEL_CSV_SCHEMA=paysim
 
 * **sparkov** — Kaggle "Credit Card Transactions Fraud Detection Dataset".
   Full mapping: has timestamp, card number, merchant, category, amount, geo.
@@ -20,6 +21,17 @@
   (card1, addr1), upi_app as the channel-equivalent merchant, and bank folded
   into the merchant id so a "known bad bank/app pairing" is learnable the same
   way a known-bad merchant is elsewhere. Country fixed to IN.
+* **paysim** — Kaggle "Synthetic Financial Datasets For Fraud Detection"
+  (PaySim, Lopez-Rojas et al. 2016): a mobile-money simulator, columns
+  step,type,amount,nameOrig,oldbalanceOrg,newbalanceOrig,nameDest,
+  oldbalanceDest,newbalanceDest,isFraud,isFlaggedFraud. ``nameOrig`` is the
+  customer, ``type`` maps to a channel/mcc (CASH_IN/CASH_OUT/TRANSFER/
+  PAYMENT/DEBIT), ``step`` (1 simulated hour each) becomes the timestamp.
+  PaySim's ``amount`` is an abstract simulation unit, not a real currency
+  figure (it commonly runs into the hundreds of thousands per row), so it is
+  log-compressed down into the same realistic INR band the rest of Sentinel
+  uses (roughly ₹50-₹20,000+) rather than relabelled as-is — see
+  ``_paysim_amount_to_inr``. Country fixed to IN; no geo in the source data.
 
 Uses only the standard library so it streams large files without pandas.
 """
@@ -27,6 +39,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
@@ -53,9 +66,10 @@ def load_csv_events(path: str, schema: str) -> list[dict]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"dataset not found: {path}")
-    fn = {"sparkov": _sparkov, "ieee": _ieee, "ulb": _ulb, "upi": _upi}.get(schema)
+    fn = {"sparkov": _sparkov, "ieee": _ieee, "ulb": _ulb, "upi": _upi,
+          "paysim": _paysim}.get(schema)
     if fn is None:
-        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb | upi)")
+        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb | upi | paysim)")
     with p.open(newline="") as fh:
         events = list(fn(csv.DictReader(fh)))
     events.sort(key=lambda e: e["ts"])
@@ -145,6 +159,55 @@ def _upi(reader: csv.DictReader) -> Iterator[dict]:
             "lat": 0.0, "lon": 0.0,
             "device_id": device, "card_bin": _hash_bin(bank),
             "label": 1 if str(r.get("is_suspicious", "")).strip().lower() == "true" else 0,
+        }
+
+
+def _paysim_amount_to_inr(raw: float) -> float:
+    """Compress PaySim's abstract simulation-unit amount into Sentinel's
+    realistic INR range (~50-20,000+) with a log transform, preserving
+    relative ordering (a bigger PaySim amount stays a bigger INR amount)
+    without pretending the raw number is already a rupee figure."""
+    if raw <= 0:
+        return 1.0
+    # log1p(raw) for real PaySim data (amounts commonly 1e2-1e7) spans
+    # roughly 5-16; rescale that span onto log(50)..log(20000), i.e. an INR
+    # amount realistically in Sentinel's demo range.
+    lo_in, hi_in = 5.0, 16.0
+    lo_out, hi_out = math.log(50.0), math.log(20000.0)
+    t = (math.log1p(raw) - lo_in) / (hi_in - lo_in)
+    t = min(1.2, max(-0.2, t))   # allow slight overshoot instead of a hard clip
+    return round(math.exp(lo_out + t * (hi_out - lo_out)), 2)
+
+
+def _paysim(reader: csv.DictReader) -> Iterator[dict]:
+    _TYPE_MAP = {
+        "CASH_IN": ("bank_transfer", "transfer"),
+        "CASH_OUT": ("atm_withdrawal", "atm"),
+        "DEBIT": ("retail", "pos"),
+        "PAYMENT": ("retail", "online"),
+        "TRANSFER": ("wire_transfer", "transfer"),
+    }
+    for r in reader:
+        try:
+            step = int(_f(r, "step"))
+        except (TypeError, ValueError):
+            continue
+        ts = _EPOCH + timedelta(hours=step)
+        cust = (r.get("nameOrig") or "unknown").strip()
+        dest = (r.get("nameDest") or "").strip()
+        kind = (r.get("type") or "PAYMENT").strip().upper()
+        mcc, channel = _TYPE_MAP.get(kind, ("retail", "online"))
+        raw_amt = _f(r, "amount")
+        yield {
+            "type": "txn", "ts": ts, "cust_id": f"ps_{cust}",
+            "amount": _paysim_amount_to_inr(raw_amt),
+            "mcc": mcc, "channel": channel,
+            "merchant_id": dest or f"ps_merchant_{kind.lower()}",
+            "beneficiary": dest if channel == "transfer" else "",
+            "country": "IN", "city": "",
+            "lat": 0.0, "lon": 0.0,
+            "device_id": f"ps_dev_{cust}", "card_bin": _hash_bin(cust),
+            "label": int(_f(r, "isFraud")),
         }
 
 

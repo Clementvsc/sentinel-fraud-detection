@@ -521,21 +521,24 @@
   });
 
   /* ---------------- real-data replay ---------------- */
-  $("#replayBtn")?.addEventListener("click", async (e) => {
-    const btn = e.target, schema = btn.dataset.schema, status = $("#replayStatus");
-    btn.disabled = true; btn.textContent = "Replaying…";
-    try {
-      const r = await fetch("/replay", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schema_name: schema, limit: 100 }) });
-      const j = await r.json();
-      if (!r.ok) {
-        status.innerHTML = `No dataset found yet. ${j.detail || "See docs/REAL_DATA.md to download one."}`;
-        return;
-      }
-      status.textContent = `Replayed ${j.replayed} real transactions (${j.cursor}/${j.total_rows} so far from ${schema}).`;
-      toast(`Streamed ${j.replayed} real, historical transactions into the live feed.`);
-    } catch { status.textContent = "Couldn't reach the replay API."; }
-    finally { btn.disabled = false; btn.textContent = "Replay 100 real transactions"; }
+  document.querySelectorAll(".replayBtn").forEach((btn) => {
+    const original = btn.textContent;
+    btn.addEventListener("click", async () => {
+      const schema = btn.dataset.schema, status = $("#replayStatus");
+      btn.disabled = true; btn.textContent = "Replaying…";
+      try {
+        const r = await fetch("/replay", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ schema_name: schema, limit: 100 }) });
+        const j = await r.json();
+        if (!r.ok) {
+          status.innerHTML = `No dataset found yet. ${j.detail || "See docs/DATA.md to download one."}`;
+          return;
+        }
+        status.textContent = `Replayed ${j.replayed} real transactions (${j.cursor}/${j.total_rows} so far from ${schema}).`;
+        toast(`Streamed ${j.replayed} real, historical transactions into the live feed.`);
+      } catch { status.textContent = "Couldn't reach the replay API."; }
+      finally { btn.disabled = false; btn.textContent = original; }
+    });
   });
 
 

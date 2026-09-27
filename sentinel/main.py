@@ -46,7 +46,7 @@ class SimConfigIn(BaseModel):
 
 
 class ReplayIn(BaseModel):
-    schema_name: str = "sparkov"   # sparkov | ieee | ulb (see datasets/csv_adapter.py)
+    schema_name: str = "upi"       # sparkov | ieee | ulb | upi | paysim (see datasets/csv_adapter.py)
     path: str | None = None        # defaults to data/<schema_name>.csv
     limit: int = 200               # how many rows to replay this call
     speed: int = 15                # rows scored per broadcast batch (visual pacing only)
@@ -188,8 +188,10 @@ async def replay(r: ReplayIn) -> dict:
     the exact same live scoring + broadcast path as /score. Each row is a genuine
     transaction from a public fraud-research dataset (see datasets/csv_adapter.py
     for the supported schemas and datasets/fetch.py for the one auto-downloadable
-    source). Point `path` at a CSV you downloaded yourself (e.g. Kaggle "Sparkov")
-    for real merchant/amount/location data with proper per-customer history."""
+    source). `upi` (real Indian UPI/Razorpay transactions) is the default and, if
+    present, needs no download; `paysim` (Kaggle PaySim mobile-money simulator)
+    and the others need a CSV you downloaded yourself — point `path` at it, or
+    drop it at data/<schema_name>.csv."""
     from pathlib import Path
     from .datasets.csv_adapter import load_csv_events
 
@@ -197,9 +199,10 @@ async def replay(r: ReplayIn) -> dict:
     if not csv_path.exists():
         raise HTTPException(
             404,
-            f"no dataset at {csv_path}. Download one first — see docs/REAL_DATA.md "
-            f"(Kaggle 'Sparkov Credit Card Transactions Fraud Detection Dataset' is "
-            f"recommended for live replay) — then pass its path in this request.",
+            f"no dataset at {csv_path}. Download one first — see docs/DATA.md "
+            f"(the real Indian 'upi' dataset or Kaggle 'PaySim Synthetic Financial "
+            f"Datasets For Fraud Detection' both work well for live replay) — "
+            f"then pass its path in this request or place it at that path.",
         )
 
     STATE.setdefault("_replay_cursor", {})
@@ -236,7 +239,7 @@ def replay_status() -> dict:
     from pathlib import Path
     data_dir = config.ROOT.parent / "data"
     found = []
-    for schema in ("sparkov", "ieee", "ulb"):
+    for schema in ("upi", "paysim", "sparkov", "ieee", "ulb"):
         for name in (f"{schema}.csv", "creditcard.csv" if schema == "ulb" else None):
             if not name:
                 continue

@@ -115,9 +115,10 @@
       <details class="sim" id="replay">
         <summary>Replay real transactions</summary>
         <div class="body">
-          <div class="hint">Streams genuine historical transactions (real amounts, merchants, locations, and fraud labels from a public dataset) through the same live pipeline — not the synthetic simulator. See <code>docs/REAL_DATA.md</code> to download a dataset first.</div>
+          <div class="hint">Streams genuine historical transactions (real amounts, merchants/UPI apps, and fraud labels from a public dataset) through the same live pipeline — not the synthetic simulator. See <code>docs/DATA.md</code> to download a dataset first.</div>
           <div class="btns">
-            <button class="abtn" id="replayBtn" data-schema="sparkov">Replay 100 real transactions</button>
+            <button class="abtn replayBtn" data-schema="upi">Replay 100 real UPI transactions (India)</button>
+            <button class="abtn replayBtn" data-schema="paysim">Replay 100 real PaySim transactions</button>
           </div>
           <div class="hint" id="replayStatus"></div>
         </div>
