@@ -468,3 +468,36 @@ canvas { max-height: 220px; }
   .agetable th, .agetable td { padding: 7px 6px; }
   .agepanel .hd { flex-wrap: wrap; }
 }
+
+/* ---------------- model evaluation report ---------------- */
+.evalpanel { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--radius);
+  padding: 15px 18px; margin-top: 16px; box-shadow: var(--shadow); }
+.evalpanel .hd { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.evalpanel h3 { font-size: 14px; }
+.evalpanel .lead { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.evalpanel h4 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin: 0 0 10px; }
+.etiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.etile { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 11px 12px; cursor: help; }
+.etile .el { font-size: 11.5px; color: var(--muted); }
+.etile .ev { font-size: 22px; font-weight: 750; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.etile .es { font-size: 11px; color: var(--faint); }
+.egrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 22px; margin-top: 18px; }
+.cmtable { width: 100%; border-collapse: separate; border-spacing: 6px; font-variant-numeric: tabular-nums; }
+.cmtable th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-align: left; }
+.cmtable td { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; font-size: 18px; font-weight: 700; }
+.cmtable td small { display: block; font-size: 11px; font-weight: 500; color: var(--faint); }
+.cmtable td.good { color: var(--allow); }
+.cmtable td.bad { color: var(--block); }
+.emeta { margin-top: 8px; }
+.srow { display: grid; grid-template-columns: 170px minmax(0, 1fr) 90px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
+.srow .sname em { font-style: normal; font-size: 10.5px; color: var(--challenge); border: 1px solid #4a2f1a; border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+.srow .sbar { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.srow .sbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--allow)); border-radius: 999px; }
+.srow .sval { text-align: right; font-variant-numeric: tabular-nums; }
+.srow .sval small { color: var(--faint); }
+@media (max-width: 1100px) { .etiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .egrid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .evalpanel { padding: 12px 13px; }
+  .etiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .srow { grid-template-columns: 110px minmax(0, 1fr) 80px; font-size: 12px; }
+}

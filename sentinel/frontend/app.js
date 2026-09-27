@@ -625,9 +625,74 @@
   }
   $("#ageRefresh")?.addEventListener("click", loadAgeBreakdown);
 
+  /* ---------------- model evaluation report ---------------- */
+  const nicePct = (x, d = 1) => (x === null || x === undefined ? "—" : (x * 100).toFixed(d) + "%");
+  const SCEN_LABEL = {
+    account_takeover: "Account takeover", card_testing: "Card testing", stolen_card_geo: "Stolen card abroad",
+    bust_out: "Bust-out", amount_just_under: "Just under the limit", slow_drip: "Slow drip",
+    geo_consistent_ato: "Stealth takeover",
+  };
+
+  async function loadEvaluation() {
+    const body = $("#evalBody");
+    if (!body) return;
+    try {
+      const r = await fetch("/evaluation");
+      if (!r.ok) {
+        body.innerHTML = `<div class="hint">No evaluation report yet — run <code>python -m sentinel.eval</code>.</div>`;
+        return;
+      }
+      const e = await r.json();
+      const m = e.metrics, cm = e.confusion_matrix, ci = e.confidence_intervals_95 || {}, ds = e.dataset;
+      const ciTxt = (k, d = 1) => ci[k] ? `95% CI ${nicePct(ci[k][0], d)}–${nicePct(ci[k][1], d)}` : "";
+      const tile = (label, val, sub, tip) =>
+        `<div class="etile" title="${tip}"><div class="el">${label}</div><div class="ev">${val}</div><div class="es">${sub}</div></div>`;
+      const scen = Object.entries(e.per_scenario || {}).map(([k, v]) => `
+        <div class="srow">
+          <span class="sname">${SCEN_LABEL[k] || k}${v.adversarial ? ' <em>evasive</em>' : ""}</span>
+          <span class="sbar"><i style="width:${(v.recall || 0) * 100}%"></i></span>
+          <span class="sval">${nicePct(v.recall, 0)} <small>(${v.caught}/${v.fraud})</small></span>
+        </div>`).join("");
+      $("#evalLead").textContent =
+        `Scored on ${ds.transactions.toLocaleString("en-IN")} transactions from ${ds.customers} customers the model never saw during training ` +
+        `(${ds.fraud} fraud, ${nicePct(ds.fraud_prevalence, 2)}). Report generated ${new Date(e.generated_at).toLocaleDateString("en-IN")}.`;
+      body.innerHTML = `
+        <div class="etiles">
+          ${tile("Fraud caught", nicePct(m.recall), ciTxt("recall"), "Recall: share of fraudulent transactions stopped (blocked or challenged)")}
+          ${tile("Alerts that were fraud", nicePct(m.precision), ciTxt("precision"), "Precision: of the transactions stopped, the share that really were fraud")}
+          ${tile("Genuine customers stopped", nicePct(m.false_positive_rate, 2), `blocked outright: ${nicePct(e.block_only.false_positive_rate, 3)}`, "False-positive rate: share of legitimate transactions that were blocked or challenged")}
+          ${tile("F1 score", nicePct(m.f1), ciTxt("f1"), "Harmonic mean of precision and recall")}
+          ${tile("ROC-AUC", e.threshold_free.roc_auc ?? "—", "ranking quality, 1.0 = perfect", "Probability a random fraud is scored above a random genuine transaction")}
+          ${tile("PR-AUC", e.threshold_free.pr_auc ?? "—", `random guess = ${e.threshold_free.pr_auc_baseline}`, "Area under the precision-recall curve — the more informative ranking metric when fraud is rare")}
+        </div>
+        <div class="egrid">
+          <div>
+            <h4>Confusion matrix</h4>
+            <table class="cmtable">
+              <tr><th></th><th>Stopped</th><th>Allowed</th></tr>
+              <tr><th>Fraud</th><td class="good">${cm.tp.toLocaleString("en-IN")}<small>caught</small></td><td class="bad">${cm.fn.toLocaleString("en-IN")}<small>missed</small></td></tr>
+              <tr><th>Genuine</th><td class="bad">${cm.fp.toLocaleString("en-IN")}<small>false alarm</small></td><td class="good">${cm.tn.toLocaleString("en-IN")}<small>correctly allowed</small></td></tr>
+            </table>
+            <div class="hint emeta">MCC ${m.mcc === null ? "—" : m.mcc.toFixed(3)} · balanced accuracy ${nicePct(m.balanced_accuracy)} ·
+              calibration error ${e.calibration.ece} · money protected ${nicePct(e.money.prevented_share)} of ₹${Math.round(e.money.fraud_amount_inr).toLocaleString("en-IN")}</div>
+          </div>
+          <div>
+            <h4>Fraud caught, by attack type</h4>
+            ${scen}
+          </div>
+        </div>
+        <div class="hint agefoot">Age fairness on this test: false-alarm rates differ by at most
+          <b>${nicePct(e.fairness.false_positive_rate_gap, 2)}</b> between age groups.
+          <span class="agenote">Synthetic held-out test — validate on the bank's own labelled history before production use. Full report: docs/EVALUATION.md</span></div>`;
+    } catch {
+      body.innerHTML = `<div class="hint">Couldn't load the evaluation report.</div>`;
+    }
+  }
+
   /* ---------------- boot ---------------- */
   fetch("/health").then((r) => r.json()).then((h) => {
     if (h.serverless) startPolling(); else connect();
   }).catch(connect);
   loadAgeBreakdown();
+  loadEvaluation();
 })();

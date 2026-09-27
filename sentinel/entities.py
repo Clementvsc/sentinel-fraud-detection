@@ -32,6 +32,11 @@ ENTITY_FEATURES = [
 ]
 
 
+def _decay_factor(since: datetime, now: datetime) -> float:
+    dt_days = max((now - since).total_seconds() / 86400.0, 0.0)
+    return 0.5 ** (dt_days / ENTITY_HALFLIFE_DAYS)
+
+
 @dataclass
 class _Stat:
     n: float = 0.0            # time-decayed transaction count
@@ -39,6 +44,9 @@ class _Stat:
     first_ts: datetime | None = None
     last_ts: datetime | None = None
     customers: set = field(default_factory=set)
+    # per-customer decayed [n, f, last_ts] — lets a rate be read "excluding
+    # this customer's own history" (see rate_excluding)
+    by_cust: dict = field(default_factory=dict)
 
     def _decay(self, now: datetime) -> None:
         if self.last_ts is not None:
@@ -55,12 +63,40 @@ class _Stat:
         self.customers.add(cust_id)
         if self.first_ts is None:
             self.first_ts = now
+        bc = getattr(self, "by_cust", None)
+        if bc is None:                      # snapshot from before by_cust existed
+            bc = self.by_cust = {}
+        n, f, t = bc.get(cust_id, (0.0, 0.0, now))
+        k = _decay_factor(t, now)
+        bc[cust_id] = (n * k + 1.0, f * k + (1.0 if label == 1 else 0.0), now)
 
     def rate(self, prior: float, now: datetime) -> float:
         # decayed counts as of `now`, smoothed toward the global prior
         k = 0.5 ** (max((now - self.last_ts).total_seconds() / 86400.0, 0.0)
                     / ENTITY_HALFLIFE_DAYS) if self.last_ts else 1.0
         n, f = self.n * k, self.f * k
+        return (f + prior * ENTITY_PRIOR_STRENGTH) / (n + ENTITY_PRIOR_STRENGTH)
+
+    def rate_excluding(self, cust_id: str, prior: float, now: datetime) -> float:
+        """Fraud rate of this entity across OTHER customers only.
+
+        For a customer's own device and card this is the signal that matters:
+        a device or card other people have had fraud on is a ring / compromise
+        indicator. The customer's OWN past fraud on their own device/card is
+        not — it means a fraudster once used their phone or card, and after
+        that episode (in reality: after the card is reissued and the account
+        secured) their normal spending on it is normal again. Counting it made
+        every legitimate transaction a past victim made look fraudulent for
+        weeks afterwards (held-out evaluation: genuine-customer stops jumped
+        from ~0% to 10-19% per day as soon as fraud started being injected).
+        """
+        k = _decay_factor(self.last_ts, now) if self.last_ts else 1.0
+        n, f = self.n * k, self.f * k
+        own = (getattr(self, "by_cust", None) or {}).get(cust_id)
+        if own:
+            ok = _decay_factor(own[2], now)
+            n = max(n - own[0] * ok, 0.0)
+            f = min(max(f - own[1] * ok, 0.0), n)
         return (f + prior * ENTITY_PRIOR_STRENGTH) / (n + ENTITY_PRIOR_STRENGTH)
 
     def age_days(self, now: datetime) -> float:
@@ -105,9 +141,11 @@ class EntityRegistry:
         d = self._t["device"].get(keys["device"])
         bn = self._t["beneficiary"].get(keys["beneficiary"]) if keys["beneficiary"] else None
 
+        cid = str(txn.get("cust_id", "?"))
         mr = m.rate(prior, now) if m else prior
-        br = b.rate(prior, now) if b else prior
-        dr = d.rate(prior, now) if d else prior
+        # device + card: other customers' fraud only (see _Stat.rate_excluding)
+        br = b.rate_excluding(cid, prior, now) if b else prior
+        dr = d.rate_excluding(cid, prior, now) if d else prior
         nr = bn.rate(prior, now) if bn else prior
 
         dev_fanout = len(d.customers) if d else 0
@@ -193,4 +231,12 @@ class EntityRegistry:
             s = self._get(kind, key)
             s._decay(now)
             s.f += 1.0
+            # attribute it to the customer too, so rate_excluding() stays consistent
+            cid = str(txn.get("cust_id", "?"))
+            bc = getattr(s, "by_cust", None)
+            if bc is None:
+                bc = s.by_cust = {}
+            n, f, t = bc.get(cid, (0.0, 0.0, now))
+            k = _decay_factor(t, now)
+            bc[cid] = (max(n * k, f * k + 1.0), f * k + 1.0, now)
         self._prior_f += 1.0

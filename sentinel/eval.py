@@ -1,110 +1,140 @@
 """Honest evaluation on a fresh, unseen synthetic world.
 
-    python -m sentinel.eval
+    python -m sentinel.eval            # default held-out world
+    python -m sentinel.eval --quick    # smaller world, for a fast sanity check
 
-Runs every transaction of a held-out world (different seed) through the *full*
-production pipeline — calibrated model + anomaly head + rules + decision engine —
-and reports:
+Runs every transaction of a held-out world (different seed from training)
+through the *full* production pipeline and writes:
 
-    * decision mix, detection rate, false-positive rate, precision/recall
-    * per-scenario recall, including the three adversarial evasion playbooks
-    * probability calibration (reliability table, ECE, Brier)
-    * drift/PSI of this world's scores vs. the training reference
+    sentinel/reports/eval_report.json   machine-readable (served at /evaluation)
+    docs/EVALUATION.md                  human-readable model-risk summary
+
+See sentinel/evaluation.py for the exact metric definitions.
 """
 from __future__ import annotations
 
-import numpy as np
+import argparse
+from pathlib import Path
 
 from . import config
-from .datasets import SyntheticSource
-from .drift import psi
-from .engine import Engine
-from .model import FraudModel
+from .evaluation import evaluate, save_report
+
+DOC_PATH = config.ROOT.parent / "docs" / "EVALUATION.md"
 
 
-def _calibration(proba: np.ndarray, y: np.ndarray, bins: int = 10):
-    edges = np.linspace(0, 1, bins + 1)
-    rows, ece = [], 0.0
-    for i in range(bins):
-        m = (proba >= edges[i]) & (proba < edges[i + 1] if i < bins - 1 else proba <= 1.0)
-        if not m.any():
+def _p(x, d=1):
+    return "n/a" if x is None else f"{x * 100:.{d}f}%"
+
+
+def _num(x, d=3):
+    return "n/a" if x is None else f"{x:.{d}f}"
+
+
+def _ci(r, k, d=1):
+    c = r["confidence_intervals_95"].get(k)
+    return "" if not c else f" (95% CI {_p(c[0], d)}–{_p(c[1], d)})"
+
+
+def to_markdown(r: dict) -> str:
+    m, cm, ds = r["metrics"], r["confusion_matrix"], r["dataset"]
+    L = [
+        "# Sentinel — Model Evaluation Report",
+        "",
+        f"_Generated {r['generated_at']} by `python -m sentinel.eval`. "
+        "Regenerate after any model, rule or threshold change._",
+        "",
+        "## Test set",
+        f"- {ds['kind']}: seed {ds['seed']} (training seed {ds['train_seed']}), "
+        f"{ds['customers']} customers × {ds['days']} days",
+        f"- {ds['transactions']:,} transactions, {ds['fraud']} fraud "
+        f"({_p(ds['fraud_prevalence'], 2)} prevalence)",
+        f"- Definition: {r['definition']}",
+        "",
+        "## Confusion matrix (operating point)",
+        "",
+        "| | Predicted fraud (stopped) | Predicted legit (allowed/review) |",
+        "|---|---:|---:|",
+        f"| **Actual fraud** | {cm['tp']:,} (TP) | {cm['fn']:,} (FN) |",
+        f"| **Actual legit** | {cm['fp']:,} (FP) | {cm['tn']:,} (TN) |",
+        "",
+        "## Metrics at the operating point",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+        f"| Recall / detection rate | {_p(m['recall'])}{_ci(r, 'recall')} |",
+        f"| Precision | {_p(m['precision'])}{_ci(r, 'precision')} |",
+        f"| F1 | {_p(m['f1'])}{_ci(r, 'f1')} |",
+        f"| Specificity | {_p(m['specificity'], 2)}{_ci(r, 'specificity', 2)} |",
+        f"| False-positive rate (stopped) | {_p(m['false_positive_rate'], 3)}{_ci(r, 'false_positive_rate', 3)} |",
+        f"| False-positive rate (block only) | {_p(r['block_only']['false_positive_rate'], 3)} |",
+        f"| Matthews correlation (MCC) | {_num(m['mcc'])} |",
+        f"| Balanced accuracy | {_p(m['balanced_accuracy'])} |",
+        "",
+        "## Threshold-free ranking quality (calibrated probability)",
+        f"- ROC-AUC: **{r['threshold_free']['roc_auc']}**",
+        f"- PR-AUC: **{r['threshold_free']['pr_auc']}** "
+        f"(random baseline = prevalence = {r['threshold_free']['pr_auc_baseline']})",
+        "",
+        "## Calibration",
+        f"- Expected calibration error: {r['calibration']['ece']} · Brier score: {r['calibration']['brier']}",
+        "",
+        "| Predicted band | n | Mean predicted | Observed fraud rate |",
+        "|---|---:|---:|---:|",
+    ]
+    for row in r["calibration"]["table"]:
+        L.append(f"| {row['lo']:.1f}–{row['hi']:.1f} | {row['n']:,} | {row['predicted']:.3f} | {row['observed']:.3f} |")
+    L += ["", "## Recall by fraud scenario", "", "| Scenario | Fraud | Caught | Recall |", "|---|---:|---:|---:|"]
+    for s, v in r["per_scenario"].items():
+        tag = " (adversarial)" if v["adversarial"] else ""
+        L.append(f"| {s}{tag} | {v['fraud']} | {v['caught']} | {_p(v['recall'])} |")
+    L += ["", "## Fairness by customer age", "",
+          "| Age | Transactions | Fraud | Recall | False-positive rate |", "|---|---:|---:|---:|---:|"]
+    for a in r["per_age_bracket"]:
+        if not a.get("transactions"):
+            L.append(f"| {a['bracket']} | 0 | – | – | – |")
             continue
-        conf, acc, n = proba[m].mean(), y[m].mean(), int(m.sum())
-        ece += n / len(y) * abs(acc - conf)
-        rows.append((edges[i], edges[i + 1], n, conf, acc))
-    return rows, ece
+        L.append(f"| {a['bracket']} | {a['transactions']:,} | {a['fraud']} | "
+                 f"{_p(a['recall'])} | {_p(a['false_positive_rate'], 3)} |")
+    f = r["fairness"]
+    L += ["",
+          f"- False-positive-rate gap between age groups: {_p(f['false_positive_rate_gap'], 3)}",
+          f"- Recall gap between age groups: {_p(f['recall_gap'])}",
+          "",
+          "## Business impact",
+          f"- Fraud value in test set: ₹{r['money']['fraud_amount_inr']:,.0f}; "
+          f"prevented: ₹{r['money']['prevented_inr']:,.0f} ({_p(r['money']['prevented_share'])})",
+          f"- Decision mix: {r['decision_mix']}",
+          f"- Score drift (PSI) vs training reference: {r['drift_psi_after_warmup']} once customer "
+          f"profiles have warmed up (second half of the run); {r['drift_psi_vs_training']} over the "
+          "whole run, which includes the cold-start period where every test customer is new "
+          "(PSI < 0.1 stable, 0.1–0.25 watch, > 0.25 investigate)",
+          "",
+          "## Limitations",
+          "- The test world is synthetic (different seed, same generator). It measures generalisation "
+          "to unseen customers and fraud episodes, not to a real bank's population; validate on the "
+          "bank's own labelled history before production use.",
+          "- Real-data replays (UPI, PaySim) have no customer-age column, so age-based fairness is only "
+          "measured on synthetic customers.",
+          "- Confidence intervals are percentile bootstrap over transactions and do not account for "
+          "correlation between transactions of the same customer or fraud episode, so they are "
+          "somewhat optimistic.",
+          ""]
+    return "\n".join(L)
 
 
 def main() -> None:
-    if not FraudModel.exists():
-        raise SystemExit("no model artifact — run `python -m sentinel.train` first")
-    model = FraudModel.load()
-    engine = Engine(model, autosnapshot=False)
-    # unseen world: different seed, its own customers
-    src = SyntheticSource(110, 35, seed=config.TRAIN_SEED + 999)
-    engine.customers = {c.cust_id: c for c in src.customers}
-    for c in src.customers:
-        from .features import ProfileState
-        engine.profiles[c.cust_id] = ProfileState(
-            c.cust_id, c.home_country, c.home_lat, c.home_lon, c.account_open)
-
-    events = src.events()
-    n_txn = sum(e["type"] == "txn" for e in events)
-    print(f"  scoring {n_txn:,} transactions through the full pipeline ...")
-    probas, risks, ys, scen_hit, scen_tot = [], [], [], {}, {}
-    done = 0
-    for ev in events:
-        if ev["type"] == "login":
-            ps = engine.profiles.get(ev["cust_id"])
-            if ps:
-                ps.add_login(ev["ts"], ev["success"], ev.get("device_id", ""))
-            continue
-        case = engine.process(ev)
-        done += 1
-        if done % 2000 == 0:
-            print(f"    {done:,}/{n_txn:,}")
-        probas.append(case["fraud_proba"])
-        risks.append(case["risk"])
-        ys.append(case["label"])
-        if case["label"] == 1:
-            s = case["scenario"]
-            scen_tot[s] = scen_tot.get(s, 0) + 1
-            scen_hit[s] = scen_hit.get(s, 0) + int(case["action"] in ("BLOCK", "CHALLENGE"))
-
-    m = engine.metrics_snapshot()
-    probas, ys = np.asarray(probas), np.asarray(ys)
-
-    print("\n  policy comparison (rules-only vs model-only vs Sentinel):")
-    print(f"    {'policy':<12} {'detection':>10} {'FP rate':>10}")
-    for name in ("rules_only", "model_only", "full"):
-        pc = m["policy_comparison"][name]
-        print(f"    {name:<12} {pc['detection_rate']*100:>9.1f}% {pc['false_positive_rate']*100:>9.3f}%")
-
-    print("\n=== Sentinel evaluation — fresh held-out world ===")
-    print(f"  transactions      : {m['processed']:,}")
-    print(f"  fraud             : {m['fraud_total']}  ({m['fraud_total']/m['processed']*100:.2f}%)")
-    print(f"  decision mix      : {m['by_action']}")
-    print(f"  detection rate    : {m['detection_rate']*100:.1f}%  "
-          f"(BLOCK or CHALLENGE on labelled fraud)")
-    print(f"  false-positive rate: {m['false_positive_rate']*100:.3f}%  "
-          f"({m['false_positives']} legit txns blocked)")
-    print(f"  exposure prevented: ₹{m['amount_saved']:,.0f}")
-
-    print("\n  per-scenario recall:")
-    for s in sorted(scen_tot):
-        tag = "  (adversarial)" if s in {"amount_just_under", "slow_drip", "geo_consistent_ato"} else ""
-        print(f"    {s:20s} {scen_hit[s]:3d}/{scen_tot[s]:<3d}  "
-              f"{scen_hit[s]/scen_tot[s]*100:5.1f}%{tag}")
-
-    rows, ece = _calibration(probas, ys)
-    brier = float(np.mean((probas - ys) ** 2))
-    print(f"\n  calibration: ECE={ece:.4f}  Brier={brier:.5f}")
-    print("    bin            n     predicted   actual")
-    for lo, hi, n, conf, acc in rows:
-        print(f"    [{lo:.1f},{hi:.1f})  {n:6d}   {conf:8.3f}   {acc:7.3f}")
-
-    ref = model.meta.get("ref_scores", [])
-    print(f"\n  PSI (risk blend) vs training reference: {psi(ref, list(risks)):.4f}")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--quick", action="store_true", help="small world, fewer bootstrap samples")
+    a = ap.parse_args()
+    kw = dict(n_customers=40, days=20, n_boot=100) if a.quick else {}
+    print("  scoring the held-out world through the full pipeline ...")
+    r = evaluate(progress=lambda d, n: print(f"    {d:,}/{n:,}"), **kw)
+    p = save_report(r)
+    md = to_markdown(r)
+    if not a.quick:
+        DOC_PATH.write_text(md)
+    print(md)
+    print(f"\n  wrote {p}" + ("" if a.quick else f" and {DOC_PATH}"))
 
 
 if __name__ == "__main__":

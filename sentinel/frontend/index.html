@@ -6,6 +6,7 @@
   <title>Sentinel — AI Banking Fraud Detection</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750;800&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z' fill='%235aa2ff'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -154,6 +155,16 @@
       <button class="ghost" id="ageRefresh">Refresh</button>
     </div>
     <div id="ageBody" class="agebody"><div class="hint">Score some transactions, then hit Refresh.</div></div>
+  </section>
+
+  <section class="evalpanel" id="evalPanel">
+    <div class="hd">
+      <div>
+        <h3>How good is the model? — independent test</h3>
+        <div class="lead" id="evalLead">Scored on a held-out set of customers the model never saw during training.</div>
+      </div>
+    </div>
+    <div id="evalBody"><div class="hint">Loading evaluation report…</div></div>
   </section>
 
   <div class="charts analyst-only">

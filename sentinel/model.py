@@ -123,7 +123,7 @@ class FraudModel:
     def __init__(self, clf, iso, calibrator, meta: dict | None = None):
         self.clf = clf
         self.iso = iso
-        self.calibrator = calibrator            # IsotonicRegression or None
+        self.calibrator = calibrator            # IsotonicRegression, PlattCalibrator or None
         self.meta = meta or {}
         self.median = np.asarray(self.meta.get("median", [0.0] * len(FEATURE_COLUMNS)))
         self._explainer = None                  # lazy, model-agnostic counterfactual search
@@ -220,6 +220,32 @@ def cost_threshold(y: np.ndarray, proba: np.ndarray,
     return best_t, best_c
 
 
+ISOTONIC_MIN_POSITIVES = 50   # below this many validation frauds, calibrate with a sigmoid
+
+
+class PlattCalibrator:
+    """Sigmoid (Platt) calibration of a raw probability, fit on its logit.
+
+    Same interface the engine and explainer use for the isotonic calibrator
+    (`fit(raw, y)`, `predict(raw) -> calibrated probability`), so either can
+    be stored in the model artifact."""
+
+    def fit(self, raw, y):
+        from sklearn.linear_model import LogisticRegression
+        z = self._logit(raw).reshape(-1, 1)
+        self.lr_ = LogisticRegression(C=1e4, max_iter=1000).fit(z, np.asarray(y, int))
+        return self
+
+    def predict(self, raw):
+        z = self._logit(raw).reshape(-1, 1)
+        return self.lr_.predict_proba(z)[:, 1]
+
+    @staticmethod
+    def _logit(p):
+        p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p))
+
+
 def train(X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None,
           feature_names: list[str] | None = None,
           split: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None) -> tuple[FraudModel, dict]:
@@ -240,11 +266,23 @@ def train(X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None,
     clf = _fit_clf(X[tr], y[tr], sw[tr] if sw is not None else None)
     iso = _fit_iso(X[tr], y[tr])
 
-    # isotonic calibration on the validation slice
+    # probability calibration on the validation slice
     raw_va = clf.predict_proba(X[va])[:, 1]
     calibrator = None
-    if y[va].sum() >= 5 and y[va].sum() < len(va):
-        calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    calibration_method = "none"
+    n_pos_va = int(y[va].sum())
+    if n_pos_va >= 5 and n_pos_va < len(va):
+        if n_pos_va >= ISOTONIC_MIN_POSITIVES:
+            calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+            calibration_method = "isotonic"
+        else:
+            # Too few fraud cases for isotonic regression, which then overfits
+            # into a handful of coarse steps (seen with 17 validation frauds:
+            # calibrated Brier WORSE than raw, and probabilities snapping to a
+            # single step value). A 2-parameter sigmoid is the standard choice
+            # for small calibration sets.
+            calibrator = PlattCalibrator()
+            calibration_method = "sigmoid"
         calibrator.fit(raw_va, y[va])
     cal_va = np.clip(calibrator.predict(raw_va), 0, 1) if calibrator is not None else raw_va
 
@@ -261,7 +299,9 @@ def train(X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None,
     recall = tp / (tp + fn) if tp + fn else 0.0
 
     meta = {
-        "model": "HistGradientBoosting + IsotonicCalibration + IsolationForest",
+        "model": f"HistGradientBoosting + {calibration_method} calibration + IsolationForest",
+        "calibration_method": calibration_method,
+        "calibration_positives": n_pos_va,
         "features": feature_names or FEATURE_COLUMNS,
         "n_samples": n, "n_fraud": int(y.sum()), "fraud_rate": round(float(y.mean()), 5),
         "split": "time-ordered 70/15/15 (valid=calibration, test=out-of-time)",

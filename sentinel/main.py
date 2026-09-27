@@ -400,6 +400,20 @@ def metrics_by_age() -> dict:
     return _engine().age_breakdown()
 
 
+@app.get("/evaluation")
+def evaluation_report() -> dict:
+    """The held-out model evaluation report (confusion matrix, precision /
+    recall / F1 / MCC with 95% CIs, ROC-AUC, PR-AUC, calibration, per-scenario
+    recall, per-age fairness). Produced offline by `python -m sentinel.eval` —
+    scoring a full held-out world takes ~2 minutes, too long for a request —
+    and committed alongside the model so it always describes that model."""
+    from .evaluation import load_report
+    r = load_report()
+    if r is None:
+        raise HTTPException(404, "no evaluation report yet — run `python -m sentinel.eval`")
+    return r
+
+
 @app.get("/drift")
 def drift() -> dict:
     return _engine().drift_status()

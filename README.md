@@ -136,13 +136,18 @@ any slice with FP rate > 1.25× the fairest slice for review.
 
 ## Quick start on Windows
 
-1. Install Python 3 if it is not already installed. Keep an internet connection for the first setup.
+1. Install **Python 3.11 or newer** (from python.org) if it is not already installed. Keep an internet connection for the first setup.
 2. Double-click **Start Sentinel.bat** in this project folder. It creates a local Python environment, installs the project dependencies, starts the server in a second window, and opens the dashboard when it is ready.
 3. Keep the **Sentinel server** window open while using the site. Close it or press Ctrl+C there to stop the server.
 
 The first start can take a few minutes while Python packages install. If setup or startup fails, read the message in the Sentinel server window.
 
 ## Quick start on macOS or Linux
+
+Requires **Python 3.11 or newer** (the committed model is pinned to scikit-learn
+1.8.0, which needs 3.11+). `run.sh` picks the newest suitable `python3.x` it can
+find and tells you what to install if there isn't one — on a Mac,
+`brew install python@3.12` works.
 
 From this project folder, run:
 
