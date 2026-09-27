@@ -3,6 +3,7 @@
     SENTINEL_DATA=/path/creditcard.csv          SENTINEL_CSV_SCHEMA=ulb
     SENTINEL_DATA=/path/fraudTrain.csv          SENTINEL_CSV_SCHEMA=sparkov
     SENTINEL_DATA=/path/ieee_train.csv          SENTINEL_CSV_SCHEMA=ieee
+    SENTINEL_DATA=/path/upi_fraud.csv           SENTINEL_CSV_SCHEMA=upi
 
 * **sparkov** — Kaggle "Credit Card Transactions Fraud Detection Dataset".
   Full mapping: has timestamp, card number, merchant, category, amount, geo.
@@ -12,6 +13,13 @@
 * **ulb**    — Kaggle ULB "creditcard.csv" (V1..V28 PCA features). No entities,
   so events carry a ``raw_features`` dict and the trainer skips feature
   engineering and learns on the raw columns directly.
+* **upi**    — Real Indian UPI/Razorpay-style transaction export (columns:
+  timestamp, amount, currency=INR, upi_app, bank, device_fingerprint,
+  is_suspicious, fraud_reasons, ...). No geo; device_fingerprint (stable,
+  recurring per payer) is used as the customer proxy the same way ieee uses
+  (card1, addr1), upi_app as the channel-equivalent merchant, and bank folded
+  into the merchant id so a "known bad bank/app pairing" is learnable the same
+  way a known-bad merchant is elsewhere. Country fixed to IN.
 
 Uses only the standard library so it streams large files without pandas.
 """
@@ -45,9 +53,9 @@ def load_csv_events(path: str, schema: str) -> list[dict]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"dataset not found: {path}")
-    fn = {"sparkov": _sparkov, "ieee": _ieee, "ulb": _ulb}.get(schema)
+    fn = {"sparkov": _sparkov, "ieee": _ieee, "ulb": _ulb, "upi": _upi}.get(schema)
     if fn is None:
-        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb)")
+        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb | upi)")
     with p.open(newline="") as fh:
         events = list(fn(csv.DictReader(fh)))
     events.sort(key=lambda e: e["ts"])
@@ -111,6 +119,32 @@ def _ulb(reader: csv.DictReader) -> Iterator[dict]:
             "beneficiary": "", "country": "US", "city": "",
             "lat": 0.0, "lon": 0.0, "device_id": "ulb", "card_bin": "ulb",
             "label": int(_f(r, "Class")), "raw_features": raw,
+        }
+
+
+def _upi(reader: csv.DictReader) -> Iterator[dict]:
+    for r in reader:
+        try:
+            ts = datetime.fromisoformat(r["timestamp"])
+        except (KeyError, ValueError):
+            continue
+        device = (r.get("device_fingerprint") or "unknown").strip()
+        bank = (r.get("bank") or "bank").strip()
+        app = (r.get("upi_app") or "upi").strip()
+        # a failed/declined attempt never redefines "normal" behaviour, same
+        # principle ProfileState.update() already applies bank-side; keep
+        # only settled transactions so profiles aren't built on noise.
+        if (r.get("status") or "").strip().lower() != "success":
+            continue
+        yield {
+            "type": "txn", "ts": ts, "cust_id": f"upi_{device}",
+            "amount": _f(r, "amount"),
+            "mcc": "upi_transfer", "channel": "transfer",
+            "merchant_id": f"{bank}_{app}",
+            "beneficiary": "", "country": "IN", "city": "",
+            "lat": 0.0, "lon": 0.0,
+            "device_id": device, "card_bin": _hash_bin(bank),
+            "label": 1 if str(r.get("is_suspicious", "")).strip().lower() == "true" else 0,
         }
 
 
