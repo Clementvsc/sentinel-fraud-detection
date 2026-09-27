@@ -157,6 +157,18 @@ def _engine() -> Engine:
     return STATE["engine"]
 
 
+def _sim() -> Simulator:
+    """Same lazy-init guarantee as _engine() — _boot() always sets both
+    together, but a request can arrive before startup has run (serverless
+    cold start, or any host without a lifespan event), and STATE["sim"]
+    read directly would then raise an unhandled KeyError -> 500 with no
+    detail, which the dashboard would render as "undefined" wherever it
+    expects a field from the response (e.g. inject's cust_id/victim_city)."""
+    if STATE.get("sim") is None:
+        _boot()
+    return STATE["sim"]
+
+
 @app.get("/health")
 def health() -> dict:
     eng = STATE.get("engine")
@@ -183,7 +195,7 @@ async def score(txn: TransactionIn) -> JSONResponse:
 async def tick(n: int = 10) -> dict:
     """Generate + score `n` ambient transactions on demand. The dashboard calls
     this when the live WebSocket isn't available (serverless / restricted hosts)."""
-    sim: Simulator = STATE.get("sim") or (_engine() and STATE["sim"])
+    sim: Simulator = _sim()
     cases = sim.tick(n)
     return {"cases": cases, "metrics": _engine().metrics_snapshot(),
             "drift": _engine().drift_status()}
@@ -424,7 +436,7 @@ async def sim_inject_ring(scenario: str, ring_size: int = 4) -> dict:
     mule beneficiary — a real fraud ring. Unlike /simulator/inject (one
     victim), this actually creates the shared entities the forensics graph
     and ring_size/fanout features are built to detect."""
-    sim: Simulator = STATE["sim"]
+    sim: Simulator = _sim()
     try:
         result = sim.inject_ring(scenario, ring_size=ring_size)
     except KeyError:
@@ -524,14 +536,14 @@ async def queue_release(case_id: int, body: QueueClaimIn) -> dict:
 
 @app.post("/simulator/config")
 def sim_config(cfg: SimConfigIn) -> dict:
-    sim: Simulator = STATE["sim"]
+    sim: Simulator = _sim()
     sim.configure(rate=cfg.rate, fraud_rate=cfg.fraud_rate, running=cfg.running)
     return {"rate": sim.rate, "fraud_rate": sim.fraud_rate, "running": sim.running}
 
 
 @app.post("/simulator/inject/{scenario}")
 def sim_inject(scenario: str) -> dict:
-    sim: Simulator = STATE["sim"]
+    sim: Simulator = _sim()
     try:
         return sim.inject(scenario)
     except KeyError:

@@ -26,7 +26,7 @@ def _case(**kw):
 def test_narrate_block_reads_like_a_note():
     s = narrate(_case())
     assert s["headline"] in ("High-confidence block", "Blocked")
-    assert "$4,200" in s["summary"] and "transfer" in s["summary"]
+    assert "₹4,200" in s["summary"] and "transfer" in s["summary"]
     assert any("6.2" in d for d in s["drivers"])
     assert any("well established" in m for m in s["mitigators"])
     assert s["recommendation"]

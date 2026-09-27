@@ -57,7 +57,7 @@ class Decision:
 
 
 def _money(x: float) -> str:
-    return f"${x:,.2f}"
+    return f"₹{x:,.2f}"
 
 
 def _signed(v: float) -> str:

@@ -24,7 +24,7 @@ _CLAUSE = {
     "failed_logins_1h": lambda v: f"{int(v)} failed logins preceded it" if v >= 1 else None,
     "txn_count_5m": lambda v: f"{int(v)} transactions in the last 5 minutes" if v >= 3 else None,
     "txn_count_1h": lambda v: f"{int(v)} transactions in the last hour" if v >= 6 else None,
-    "amt_sum_1h": lambda v: f"${v:,.0f} spent in the last hour" if v > 0 else None,
+    "amt_sum_1h": lambda v: f"₹{v:,.0f} spent in the last hour" if v > 0 else None,
     "high_risk_mcc": lambda v: "it is a high-risk category (crypto / gift card / wire)" if v >= 1 else None,
     "is_night": lambda v: "it happened overnight" if v >= 1 else None,
     "merchant_fraud_rate": lambda v: f"the merchant has a {v*100:.0f}% historical fraud rate" if v > 0.05 else None,
@@ -111,7 +111,7 @@ def narrate(case: dict) -> dict:
                 else "Cleared — looks normal" if action == "ALLOW" and risk < 0.15
                 else _HEADLINE[action])
 
-    amt = f"${case.get('amount', 0):,.2f}"
+    amt = f"₹{case.get('amount', 0):,.2f}"
     who = case.get("cust_id", "the customer")
     dest = (f" to new payee {case['beneficiary']}" if case.get("beneficiary")
             and feats.get("new_beneficiary", 0) >= 1 else
