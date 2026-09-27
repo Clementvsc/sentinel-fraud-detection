@@ -185,11 +185,12 @@
     else if (c.features?.new_beneficiary >= 1) flags.push("new payee");
     const place = c.city || c.country || "";
     const noun = c.channel === "transfer" ? "transfer" : c.channel === "atm" ? "ATM withdrawal" : `${c.mcc.replace(/_/g," ")} · ${c.channel}`;
+    const ageChip = c.age_bracket ? `<span class="agechip age-${c.age_bracket.replace("+","p")}" title="Customer age ${c.cust_age}">${c.age_bracket}</span>` : "";
     el.innerHTML = `
       <div class="ico">${chanIco(c.channel)}</div>
       <div class="main">
         <div class="amt">${money(c.amount)}</div>
-        <div class="sub">${noun}${place ? " · " + place : ""}${flags.length ? ' · <span class="flag">' + flags[0] + "</span>" : ""}</div>
+        <div class="sub">${ageChip}${noun}${place ? " · " + place : ""}${flags.length ? ' · <span class="flag">' + flags[0] + "</span>" : ""}</div>
       </div>
       <div class="right">
         <span class="verdict v-${c.action}">${I[c.action]}${v.label}</span>
@@ -269,7 +270,7 @@
         <div>
           <h2>${v.label}</h2>
           <div class="line">${money(c.amount)} ${c.channel === "transfer" ? "transfer" : c.mcc.replace(/_/g," ") + " " + c.channel}
-            · ${c.cust_id} · ${c.city || ""} ${c.country} · ${new Date(c.ts).toLocaleTimeString()}</div>
+            · ${c.cust_id}${c.age_bracket ? ` · age ${c.cust_age} (${c.age_bracket})` : ""} · ${c.city || ""} ${c.country} · ${new Date(c.ts).toLocaleTimeString()}</div>
         </div>
       </div>
       ${aiSummary(c.summary)}
@@ -501,10 +502,15 @@
       mcc: $("#mMcc").value,
       channel: $("#mChannel").value,
       city: $("#mCity").value.trim(),
-      country: ($("#mCountry").value.trim() || "CA").toUpperCase(),
+      country: ($("#mCountry").value.trim() || "IN").toUpperCase(),
       device_id: $("#mDevice").value.trim() || ("dev_manual_" + Math.random().toString(36).slice(2, 6)),
       label: 0,
     };
+    // Only send an age if one was actually typed — omitting the key lets the
+    // backend apply its deterministic per-customer fallback instead of us
+    // inventing a number here.
+    const ageRaw = $("#mAge")?.value.trim();
+    if (ageRaw) body.cust_age = parseInt(ageRaw, 10);
     if (!body.amount || body.amount <= 0) { toast("Enter a valid amount first."); return; }
     const btn = e.target.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Scoring…";
@@ -566,8 +572,62 @@
   });
 
 
+  /* ---------------- age cohort breakdown ---------------- */
+  // distinct from the global pct(): a cohort with no denominator reports "—",
+  // never "0.0%", so an empty bracket can't be misread as a perfect score
+  const ratePct = (x) => (x === null || x === undefined ? "—" : (x * 100).toFixed(1) + "%");
+
+  async function loadAgeBreakdown() {
+    const body = $("#ageBody"), btn = $("#ageRefresh");
+    if (!body) return;
+    if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+    try {
+      const r = await fetch("/metrics/by_age");
+      if (!r.ok) throw new Error(r.statusText);
+      const j = await r.json();
+      const rows = (j.brackets || []).filter((b) => b.transactions > 0);
+      if (!rows.length) {
+        body.innerHTML = `<div class="hint">No scored transactions yet — run the simulator or a replay, then Refresh.</div>`;
+        return;
+      }
+      const maxTx = Math.max(...rows.map((b) => b.transactions));
+      body.innerHTML = `
+        <table class="agetable">
+          <thead><tr>
+            <th>Age</th><th>Transactions</th><th>Fraud seen</th>
+            <th title="Share of this cohort's fraud that Sentinel stopped">Caught</th>
+            <th title="Share of this cohort's LEGITIMATE transactions that Sentinel stopped — the fairness-relevant number">False alarms</th>
+            <th>Avg amount</th>
+          </tr></thead>
+          <tbody>${rows.map((b) => `
+            <tr>
+              <td><span class="agechip age-${b.bracket.replace("+","p")}">${b.bracket}</span></td>
+              <td><span class="agebar" style="--w:${(b.transactions / maxTx * 100).toFixed(1)}%"></span>${b.transactions}</td>
+              <td>${b.fraud}</td>
+              <td class="${b.detection_rate !== null && b.detection_rate < 0.5 ? "warn" : ""}">${ratePct(b.detection_rate)}</td>
+              <td class="${b.false_positive_rate !== null && b.false_positive_rate > 0.05 ? "warn" : ""}">${ratePct(b.false_positive_rate)}</td>
+              <td>${b.avg_amount === null ? "—" : money0(b.avg_amount)}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+        <div class="hint agefoot">
+          ${j.fpr_gap === null
+            ? "Fairness gap needs legitimate traffic in at least two cohorts."
+            : `<b>Fairness gap:</b> ${ratePct(j.fpr_gap)} spread between the most- and least-affected cohort's false-alarm rate.
+               ${j.fpr_gap > 0.05 ? "A gap this wide is what a bank's model-risk review would ask about." : "Narrow — no cohort is being disproportionately stopped."}`}
+          <span class="agenote">${j.note}</span>
+        </div>`;
+    } catch {
+      body.innerHTML = `<div class="hint">Couldn't load the age breakdown.</div>`;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
+    }
+  }
+  $("#ageRefresh")?.addEventListener("click", loadAgeBreakdown);
+
   /* ---------------- boot ---------------- */
   fetch("/health").then((r) => r.json()).then((h) => {
     if (h.serverless) startPolling(); else connect();
   }).catch(connect);
+  loadAgeBreakdown();
 })();

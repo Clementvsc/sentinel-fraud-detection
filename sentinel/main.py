@@ -29,14 +29,20 @@ class TransactionIn(BaseModel):
     channel: str = "online"
     merchant_id: str = "merchant_unknown"
     beneficiary: str = ""
-    country: str = "US"
+    country: str = "IN"
     city: str = ""
-    lat: float = 40.71
-    lon: float = -74.01
+    lat: float = 19.08          # Mumbai — matches the INR/India default above
+    lon: float = 72.88
     device_id: str = "dev-unknown"
     card_bin: str = "?"
     ts: datetime | None = None
     label: int = 0
+    # Optional: a manually-entered transaction may state the customer's age.
+    # Left unset, Engine.process() resolves it (known Customer record, else a
+    # deterministic per-cust_id fallback) exactly as it does for real-data
+    # feeds, so age is never missing from a case but is never invented from
+    # thin air on each call either.
+    cust_age: int | None = Field(default=None, ge=18, le=120)
 
 
 class SimConfigIn(BaseModel):
@@ -186,6 +192,12 @@ def health() -> dict:
 async def score(txn: TransactionIn) -> JSONResponse:
     payload = txn.model_dump()
     payload["ts"] = payload["ts"] or datetime.utcnow()
+    # An unset age must be ABSENT, not present-as-None: Engine.process() keys
+    # off `"cust_age" in txn` to decide whether the caller stated an age, and
+    # a None left in the payload would both defeat that check and blow up on
+    # int(None).
+    if payload.get("cust_age") is None:
+        payload.pop("cust_age", None)
     case = _engine().process(payload)
     await hub.broadcast({"type": "case", "case": case})
     return JSONResponse(case)
@@ -377,6 +389,15 @@ async def replay_blended(r: BlendIn) -> dict:
 @app.get("/metrics")
 def metrics() -> dict:
     return _engine().metrics_snapshot()
+
+
+@app.get("/metrics/by_age")
+def metrics_by_age() -> dict:
+    """Decision and outcome stats per customer age cohort — both the
+    operational view (where the fraud is, per bracket) and the fairness view
+    (whether legitimate customers in one cohort are stopped more often than
+    another). See Engine.age_breakdown for what each field means."""
+    return _engine().age_breakdown()
 
 
 @app.get("/drift")

@@ -83,7 +83,7 @@
               <label>Amount (₹)<input type="number" id="mAmount" placeholder="1200.00" min="0.01" step="0.01" required></label>
             </div>
             <div class="mrow">
-              <label>Merchant<input type="text" id="mMerchant" placeholder="e.g. Loblaws"></label>
+              <label>Merchant<input type="text" id="mMerchant" placeholder="e.g. Reliance Fresh"></label>
               <label>Category<select id="mMcc">
                 <option value="grocery">Grocery</option>
                 <option value="retail" selected>Retail</option>
@@ -101,10 +101,13 @@
                 <option value="atm">ATM</option>
                 <option value="transfer">Transfer</option>
               </select></label>
-              <label>City<input type="text" id="mCity" placeholder="e.g. Toronto"></label>
+              <label>City<input type="text" id="mCity" placeholder="e.g. Mumbai"></label>
             </div>
             <div class="mrow">
-              <label>Country<input type="text" id="mCountry" placeholder="CA" value="CA"></label>
+              <label>Country<input type="text" id="mCountry" placeholder="IN" value="IN"></label>
+              <label>Customer age<input type="number" id="mAge" placeholder="leave blank if unknown" min="18" max="120" step="1"></label>
+            </div>
+            <div class="mrow">
               <label>Device ID<input type="text" id="mDevice" placeholder="e.g. laptop-1 (leave blank for a new device)"></label>
             </div>
             <button type="submit" class="abtn" style="width:100%;margin-top:6px">Score this transaction</button>
@@ -141,6 +144,17 @@
       </div>
     </div>
   </div>
+
+  <section class="agepanel" id="agePanel">
+    <div class="hd">
+      <div>
+        <h3>Who is being affected — by age</h3>
+        <div class="lead" id="ageLead">Fraud patterns and false alarms differ by age cohort. Refresh to recompute from live traffic.</div>
+      </div>
+      <button class="ghost" id="ageRefresh">Refresh</button>
+    </div>
+    <div id="ageBody" class="agebody"><div class="hint">Score some transactions, then hit Refresh.</div></div>
+  </section>
 
   <div class="charts analyst-only">
     <div class="chartcard"><h3>Decisions over time</h3><canvas id="decChart"></canvas></div>

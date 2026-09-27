@@ -517,6 +517,78 @@ class Engine:
     def metrics_snapshot(self):
         return self.metrics.snapshot()
 
+    def age_breakdown(self) -> dict:
+        """Per-age-cohort decision and outcome stats over the cases currently
+        in the buffer.
+
+        Two distinct uses, which is why both counts and rates are returned:
+
+        * *Operational* — where the fraud actually is. Fraud typologies differ
+          sharply by cohort (elder-targeted social engineering vs. young-adult
+          account takeover), so a fraud-ops lead wants the caught/missed split
+          per bracket, not one global number.
+        * *Fairness* — whether Sentinel treats cohorts differently. A model
+          that blocks a far larger share of over-60s' legitimate spend is a
+          disparate-impact problem a bank's model-risk function has to see,
+          even when overall accuracy looks fine. `false_positive_rate` (legit
+          transactions stopped, per bracket) is the number that surfaces it.
+
+        Rates are None, not 0.0, when a bracket has no denominator yet — an
+        empty cohort must not read as a perfect score.
+        """
+        from .datasets import AGE_BRACKETS
+
+        order = [label for label, _lo, _hi in AGE_BRACKETS]
+        stats = {b: {"bracket": b, "transactions": 0, "fraud": 0, "legit": 0,
+                     "stopped": 0, "fraud_caught": 0, "legit_stopped": 0,
+                     "amount": 0.0, "amount_stopped": 0.0} for b in order}
+
+        with self._lock:
+            cases = list(self.cases)
+
+        for c in cases:
+            b = c.get("age_bracket")
+            if b not in stats:
+                continue
+            s = stats[b]
+            stopped = c.get("action") in ("BLOCK", "CHALLENGE")
+            is_fraud = bool(c.get("label"))
+            amt = float(c.get("amount", 0.0))
+            s["transactions"] += 1
+            s["amount"] += amt
+            s["fraud" if is_fraud else "legit"] += 1
+            if stopped:
+                s["stopped"] += 1
+                s["amount_stopped"] += amt
+                s["fraud_caught" if is_fraud else "legit_stopped"] += 1
+
+        out = []
+        for b in order:
+            s = stats[b]
+            s["amount"] = round(s["amount"], 2)
+            s["amount_stopped"] = round(s["amount_stopped"], 2)
+            # detection_rate: share of this cohort's fraud that was stopped
+            s["detection_rate"] = (s["fraud_caught"] / s["fraud"]) if s["fraud"] else None
+            # false_positive_rate: share of this cohort's LEGIT spend stopped —
+            # the fairness-relevant number
+            s["false_positive_rate"] = (s["legit_stopped"] / s["legit"]) if s["legit"] else None
+            s["fraud_rate"] = (s["fraud"] / s["transactions"]) if s["transactions"] else None
+            s["avg_amount"] = round(s["amount"] / s["transactions"], 2) if s["transactions"] else None
+            out.append(s)
+
+        scored = sum(s["transactions"] for s in out)
+        fprs = [s["false_positive_rate"] for s in out if s["false_positive_rate"] is not None]
+        return {
+            "brackets": out,
+            "total_scored": scored,
+            # A simple, honest fairness headline: the spread between the most-
+            # and least-affected cohort's false-positive rate. Only meaningful
+            # once at least two cohorts have legitimate traffic.
+            "fpr_gap": round(max(fprs) - min(fprs), 4) if len(fprs) >= 2 else None,
+            "note": ("Cohort stats over the last "
+                     f"{scored} scored transactions in the live buffer."),
+        }
+
     def drift_status(self):
         return self.drift.status()
 

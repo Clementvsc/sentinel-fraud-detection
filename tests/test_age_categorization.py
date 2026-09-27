@@ -122,3 +122,90 @@ def test_real_data_fallback_age_is_stable_across_calls(engine):
     second = engine.process(_real_feed_txn(ts=datetime(2025, 6, 4, 10, 5)))
     assert first["cust_age"] == second["cust_age"]
     assert first["age_bracket"] == second["age_bracket"]
+
+
+# --------------------------------------------------------------------------- #
+# cohort breakdown (Engine.age_breakdown / GET /metrics/by_age)
+# --------------------------------------------------------------------------- #
+def test_age_breakdown_shape_and_empty_cohort_rates(engine):
+    """An empty cohort must report None, never 0.0 — a bracket with no
+    traffic is 'no data', and rendering it as a 0% false-alarm rate would
+    read as a perfect score in exactly the fairness table meant to catch
+    problems."""
+    b = engine.age_breakdown()
+    assert {"brackets", "total_scored", "fpr_gap", "note"} <= set(b)
+    assert [x["bracket"] for x in b["brackets"]] == [lbl for lbl, _lo, _hi in AGE_BRACKETS]
+    for row in b["brackets"]:
+        if row["transactions"] == 0:
+            assert row["detection_rate"] is None
+            assert row["false_positive_rate"] is None
+            assert row["avg_amount"] is None
+        if row["legit"] == 0:
+            assert row["false_positive_rate"] is None
+        if row["fraud"] == 0:
+            assert row["detection_rate"] is None
+
+
+def test_age_breakdown_counts_match_the_cases_it_summarises(trained_model):
+    """The table must be arithmetic over real scored cases, not an estimate:
+    per-bracket totals have to reconcile exactly with the case buffer."""
+    model, _ = trained_model
+    eng = Engine(model, autosnapshot=False)
+    custs = generate_customers(40, seed=21)
+    rng = random.Random(4)
+    for i, cust in enumerate(custs):
+        eng.customers[cust.cust_id] = cust
+        eng.profiles[cust.cust_id] = ProfileState(
+            cust.cust_id, cust.home_country, cust.home_lat, cust.home_lon, cust.account_open)
+        eng.process(sample_legit_txn(cust, datetime(2025, 7, 1, 9, i % 50), rng))
+
+    b = eng.age_breakdown()
+    cases = list(eng.cases)
+    assert b["total_scored"] == len(cases) == sum(r["transactions"] for r in b["brackets"])
+    for row in b["brackets"]:
+        mine = [c for c in cases if c["age_bracket"] == row["bracket"]]
+        assert row["transactions"] == len(mine)
+        assert row["fraud"] + row["legit"] == row["transactions"]
+        assert row["stopped"] == sum(c["action"] in ("BLOCK", "CHALLENGE") for c in mine)
+        assert row["fraud_caught"] + row["legit_stopped"] == row["stopped"]
+
+
+def test_metrics_by_age_endpoint_serves_the_breakdown():
+    from fastapi.testclient import TestClient
+    from sentinel.main import app
+
+    with TestClient(app) as client:
+        client.post("/tick", params={"n": 30})
+        r = client.get("/metrics/by_age")
+        assert r.status_code == 200
+        j = r.json()
+        assert j["total_scored"] > 0
+        assert len(j["brackets"]) == len(AGE_BRACKETS)
+        # whatever is reported must be JSON-clean (no NaN leaking into the UI)
+        for row in j["brackets"]:
+            for k in ("detection_rate", "false_positive_rate", "fraud_rate"):
+                assert row[k] is None or 0.0 <= row[k] <= 1.0
+
+
+def test_score_endpoint_honours_an_explicit_age_and_falls_back_without_one():
+    """Covers the manual-entry path end to end, including the trap that an
+    unset optional age must be dropped rather than passed through as None
+    (which would both defeat the 'did the caller state an age' check and
+    raise on int(None))."""
+    from fastapi.testclient import TestClient
+    from sentinel.main import app
+    from sentinel.datasets.synthetic import age_for_external_id as _fallback
+
+    with TestClient(app) as client:
+        stated = client.post("/score", json={
+            "cust_id": "manual_elder_test", "amount": 9000.0,
+            "city": "Chennai", "country": "IN", "cust_age": 72}).json()
+        assert stated["cust_age"] == 72 and stated["age_bracket"] == "60+"
+
+        cid = "manual_no_age_test"
+        unset = client.post("/score", json={
+            "cust_id": cid, "amount": 1500.0, "city": "Mumbai", "country": "IN"}).json()
+        assert unset["cust_age"] == _fallback(cid)
+        again = client.post("/score", json={
+            "cust_id": cid, "amount": 1600.0, "city": "Mumbai", "country": "IN"}).json()
+        assert again["cust_age"] == unset["cust_age"]
