@@ -1,0 +1,749 @@
+/* Sentinel dashboard — friendly front, full functionality underneath. */
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const money = (x) => "$" + Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money0 = (x) => "$" + Math.round(Number(x)).toLocaleString();
+  const pct = (x, d) => (x * 100).toFixed(d ?? (x >= 0.1 ? 0 : 1)) + "%";
+
+  const I = {
+    pos: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+    online: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg>',
+    atm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M9 17h6"/></svg>',
+    transfer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h13l-3-3M20 15H7l3 3"/></svg>',
+    ALLOW: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>',
+    REVIEW: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/></svg>',
+    CHALLENGE: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg>',
+    BLOCK: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>',
+    brain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V4a3 3 0 0 0-1-1zM15 3a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/></svg>',
+    up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 14l5-5 5 5"/></svg>',
+    down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 10l5 5 5-5"/></svg>',
+    shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>',
+    money: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 7v10M9.5 9.5a2.5 2 0 0 1 5 0c0 2-5 1-5 3a2.5 2 0 0 0 5 0"/></svg>',
+    pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
+  };
+  const chanIco = (c) => I[c] || I.online;
+
+  const VERDICT = {
+    ALLOW: { label: "Allowed", verb: "was allowed through" },
+    REVIEW: { label: "Flagged", verb: "was allowed but flagged for an analyst" },
+    CHALLENGE: { label: "Verification needed", verb: "was paused for identity verification" },
+    BLOCK: { label: "Blocked", verb: "was blocked" },
+  };
+
+  const PRETTY = {
+    amount_z: "amount vs personal norm", amount_to_max: "amount vs personal record",
+    speed_kmh: "travel speed", impossible_travel: "impossible travel",
+    new_country: "new country", new_device: "new device", new_merchant: "new merchant",
+    new_beneficiary: "new payee", failed_logins_1h: "failed logins (1h)",
+    txn_count_1h: "txns last hour", txn_count_5m: "txns last 5 min",
+    amt_sum_1h: "spent last hour", distinct_merchants_24h: "distinct merchants 24h",
+    high_risk_mcc: "high-risk category", is_night: "overnight",
+    merchant_fraud_rate: "merchant fraud history", device_fraud_rate: "device fraud history",
+    bin_fraud_rate: "card-BIN fraud history", beneficiary_fraud_rate: "payee fraud history",
+    entity_max_fraud_rate: "worst entity fraud history", ring_size: "fraud-ring size",
+    device_customer_fanout: "accounts on this device", beneficiary_customer_fanin: "accounts paying this payee",
+    seq_surprise: "unusual for this customer", seq_new_token: "never-seen behaviour",
+    seq_repeat_5: "rapid repetition", seq_regime_kl: "sudden behaviour shift",
+  };
+  const nice = (k) => PRETTY[k] || k.replace(/_/g, " ");
+  const FEATURE_DESC = {
+    amount_z: "Standard deviations from this customer's mean spend.",
+    new_device: "1 = came from an unrecognised device.",
+    new_country: "1 = first transaction ever in this country.",
+    new_beneficiary: "1 = this payee has never been paid before.",
+    impossible_travel: "1 = distance from the last transaction can't be covered in the elapsed time.",
+    seq_regime_kl: "How far the recent behaviour mix has moved from the customer's long-run pattern.",
+    seq_surprise: "How unlikely this behaviour is given the customer's history (0–1).",
+    merchant_fraud_rate: "Time-decayed historical fraud rate for this merchant.",
+    beneficiary_fraud_rate: "Historical fraud rate for this payee account.",
+    ring_size: "Distinct customers sharing this device or payee (fraud-ring signal).",
+    entity_max_fraud_rate: "Worst of the merchant / BIN / device / payee fraud rates.",
+    txn_count_5m: "Transactions by this customer in the last 5 minutes.",
+    failed_logins_1h: "Failed login attempts in the last hour.",
+  };
+  const ENTITY_KEYS = new Set(["merchant_fraud_rate","merchant_txn_count","merchant_age_days","bin_fraud_rate",
+    "device_fraud_rate","device_customer_fanout","device_is_global_new","beneficiary_fraud_rate",
+    "beneficiary_customer_fanin","beneficiary_is_global_new","beneficiary_txn_count","entity_max_fraud_rate","ring_size"]);
+
+  /* ---------------- mode toggle ---------------- */
+  let mode = localStorage.getItem("sentinel_mode") || "simple";
+  function applyMode() {
+    document.body.classList.toggle("analyst", mode === "analyst");
+    document.querySelectorAll("#modeSeg button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.mode === mode));
+  }
+  $("#modeSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    mode = b.dataset.mode; localStorage.setItem("sentinel_mode", mode); applyMode();
+    if (selected != null) selectCase(selected);
+  });
+  applyMode();
+  $("#introX").addEventListener("click", () => $("#intro").remove());
+
+  /* ---------------- charts ---------------- */
+  const riskBuckets = new Array(10).fill(0); let bucketWin = [];
+  const decChart = new Chart($("#decChart"), {
+    type: "bar", data: { labels: [], datasets: [
+      { label: "Allowed", data: [], backgroundColor: "#34d399" },
+      { label: "Flagged", data: [], backgroundColor: "#fbbf24" },
+      { label: "Verify", data: [], backgroundColor: "#fb923c" },
+      { label: "Blocked", data: [], backgroundColor: "#f87171" }] },
+    options: { responsive: true, animation: false,
+      scales: { x: { stacked: true, ticks: { color: "#93a0b4" }, grid: { display: false } },
+        y: { stacked: true, ticks: { color: "#93a0b4" }, grid: { color: "#262e3d" } } },
+      plugins: { legend: { labels: { color: "#93a0b4", boxWidth: 10 } } } },
+  });
+  const riskChart = new Chart($("#riskChart"), {
+    type: "bar", data: { labels: ["0","10","20","30","40","50","60","70","80","90"].map((x)=>x+"%"),
+      datasets: [{ data: riskBuckets, backgroundColor: ["#34d399","#34d399","#5ec98f","#8fce7f","#fbbf24","#fbbf24","#fb923c","#f0743e","#f87171","#f87171"] }] },
+    options: { responsive: true, animation: false,
+      scales: { x: { ticks: { color: "#93a0b4" }, grid: { display: false } },
+        y: { ticks: { color: "#93a0b4" }, grid: { color: "#262e3d" } } },
+      plugins: { legend: { display: false } } },
+  });
+  let dbin = { ALLOW: 0, REVIEW: 0, CHALLENGE: 0, BLOCK: 0 }, dcount = 0, didx = 0;
+  function tickDec(a) {
+    dbin[a]++; dcount++;
+    if (dcount >= 15) {
+      const d = decChart.data; d.labels.push(String(++didx));
+      d.datasets[0].data.push(dbin.ALLOW); d.datasets[1].data.push(dbin.REVIEW);
+      d.datasets[2].data.push(dbin.CHALLENGE); d.datasets[3].data.push(dbin.BLOCK);
+      if (d.labels.length > 24) { d.datasets.forEach((s) => s.data.shift()); d.labels.shift(); }
+      decChart.update(); dbin = { ALLOW: 0, REVIEW: 0, CHALLENGE: 0, BLOCK: 0 }; dcount = 0;
+    }
+  }
+
+  /* ---------------- hero stats ---------------- */
+  function healthLabel(s) {
+    return { warming: "Calibrating", stable: "Healthy", watch: "Watch", alert: "Drifting" }[s] || "—";
+  }
+  function renderHero(m, drift) {
+    m = m || {};
+    m.processed = m.processed || 0; m.fraud_total = m.fraud_total || 0;
+    m.fraud_stopped = m.fraud_stopped || 0; m.false_positives = m.false_positives || 0;
+    const legit = Math.max(m.processed - m.fraud_total, 1);
+    const d = drift || m.drift || { state: "warming", psi: 0 };
+    $("#hero").innerHTML = `
+      <div class="stat good">
+        <div class="k">${I.shield} Fraud caught</div>
+        <div class="v">${pct(m.detection_rate || 0)}</div>
+        <div class="s">${m.fraud_stopped}/${m.fraud_total} stopped before the money moved</div>
+      </div>
+      <div class="stat">
+        <div class="k">${I.ALLOW} Good customers stopped</div>
+        <div class="v">${pct(m.false_positive_rate || 0, 2)}</div>
+        <div class="s">${m.false_positives} of ${legit.toLocaleString()} legit — lower is better</div>
+      </div>
+      <div class="stat good">
+        <div class="k">${I.money} Money protected</div>
+        <div class="v">${money0(m.amount_saved || 0)}</div>
+        <div class="s">value of blocked / challenged fraud</div>
+      </div>
+      <div class="stat">
+        <div class="k">${I.pulse} Model health</div>
+        <div class="health ${d.state}"><span class="dot"></span>${healthLabel(d.state)}</div>
+        <div class="s analyst-only">drift PSI ${(+d.psi).toFixed(3)}${d.psi_raw != null ? ` (raw ${(+d.psi_raw).toFixed(2)})` : ""} · ${m.processed.toLocaleString()} scored</div>
+        <div class="s" style="${mode==='analyst'?'display:none':''}">${m.processed.toLocaleString()} transactions scored</div>
+      </div>`;
+  }
+
+  /* ---------------- policy A/B ---------------- */
+  function renderPolicy(pc) {
+    if (!pc) return;
+    const defs = [
+      ["rules_only", "Rules only", "hand-written tripwires"],
+      ["model_only", "AI only", "the machine-learning score"],
+      ["full", "Sentinel", "rules + AI together"],
+    ];
+    const max = Math.max(...defs.map(([k]) => (pc[k] || {}).detection_rate || 0), 0.01);
+    $("#pbars").innerHTML = defs.map(([k, nm, sub]) => {
+      const v = pc[k] || { detection_rate: 0, false_positive_rate: 0 };
+      return `<div class="pbar ${k === "full" ? "win" : ""}">
+        <div class="nm">${nm}<br><span style="color:var(--faint);font-size:11px">${sub}</span></div>
+        <div class="track"><div class="fill" style="width:${(v.detection_rate / max) * 100}%"></div></div>
+        <div class="n">${pct(v.detection_rate)}<br><small>${pct(v.false_positive_rate, 2)} FP</small></div>
+      </div>`;
+    }).join("");
+    const f = pc.full?.detection_rate || 0, best = Math.max(pc.rules_only?.detection_rate || 0, pc.model_only?.detection_rate || 0);
+    if (f > 0 && best > 0) {
+      const x = (f / best).toFixed(1);
+      $("#policyLead").textContent = `Together they catch ${pct(f)} of fraud — about ${x}× what either approach manages alone, at the same false-positive rate.`;
+    }
+  }
+
+  /* ---------------- feed ---------------- */
+  const feed = $("#feed"), MAX = 55, cache = new Map();
+  let selected = null;
+  function addTxn(c) {
+    cache.set(c.id, c);
+    const el = document.createElement("div");
+    el.className = "txn"; el.dataset.id = c.id;
+    const v = VERDICT[c.action];
+    const flags = [];
+    if (c.features?.new_device >= 1) flags.push("new device");
+    else if (c.features?.new_country >= 1) flags.push("new country");
+    else if (c.features?.new_beneficiary >= 1) flags.push("new payee");
+    const place = c.city || c.country || "";
+    const noun = c.channel === "transfer" ? "transfer" : c.channel === "atm" ? "ATM withdrawal" : `${c.mcc.replace(/_/g," ")} · ${c.channel}`;
+    el.innerHTML = `
+      <div class="ico">${chanIco(c.channel)}</div>
+      <div class="main">
+        <div class="amt">${money(c.amount)}</div>
+        <div class="sub">${noun}${place ? " · " + place : ""}${flags.length ? ' · <span class="flag">' + flags[0] + "</span>" : ""}</div>
+      </div>
+      <div class="right">
+        <span class="verdict v-${c.action}">${I[c.action]}${v.label}</span>
+        <span class="risknum analyst-only">${Math.round(c.risk * 100)}%</span>
+      </div>`;
+    el.addEventListener("click", () => selectCase(c.id, el));
+    feed.prepend(el);
+    while (feed.children.length > MAX) feed.removeChild(feed.lastChild);
+    const b = Math.min(9, Math.floor(c.risk * 10));
+    riskBuckets[b]++; bucketWin.push(b);
+    if (bucketWin.length > 350) riskBuckets[bucketWin.shift()]--;
+    riskChart.update();
+    tickDec(c.action);
+  }
+
+  /* ---------------- case detail ---------------- */
+  function aiSummary(s) {
+    if (!s) return "";
+    const li = (arr, cls) => (arr || []).map((x) => `<li class="${cls}">${x}</li>`).join("");
+    return `<div class="aisum">
+      <div class="aihead">${I.brain} AI summary — ${s.headline}</div>
+      <p>${s.summary}</p>
+      ${(s.drivers?.length || s.mitigators?.length) ? `<ul class="aifac">${li(s.drivers,"up")}${li(s.mitigators,"down")}</ul>` : ""}
+      <div class="aireco"><b>Recommended:</b> ${s.recommendation}</div>
+      ${s.ground_truth ? `<div class="aigt">${s.ground_truth}</div>` : ""}
+    </div>`;
+  }
+  function contribBars(expl) {
+    if (!expl?.length) return "";
+    const max = Math.max(...expl.map((e) => Math.abs(e.contribution)), 1e-6);
+    return `<div class="contribs">` + expl.map((e) => {
+      const w = (Math.abs(e.contribution) / max) * 50, cls = e.contribution >= 0 ? "pos" : "neg";
+      return `<div class="c"><span class="lbl" title="${FEATURE_DESC[e.feature] || e.feature}">${nice(e.feature)}</span>
+        <span class="track"><i class="${cls}" style="width:${w}%"></i></span>
+        <span class="val">${e.contribution >= 0 ? "+" : ""}${(e.contribution * 100).toFixed(0)} pp</span></div>`;
+    }).join("") + `</div>`;
+  }
+  function counterfactualCard(cf) {
+    if (!cf) return "";
+    if (!cf.found) return `<div class="cfbox"><b>Counterfactual search</b><div>${cf.message || "No reference path found."}</div><small>${cf.note || ""}</small></div>`;
+    const groups = (cf.groups || []).map((g) => `<li><b>${g.label}</b>: ${g.changes.map((x) => `${nice(x.feature)} ${x.from} → ${x.to}`).join(", ")}</li>`).join("");
+    return `<div class="cfbox"><b>Grouped counterfactual path</b>
+      <div>Calibrated fraud probability ${pct(cf.base_probability)} → ${pct(cf.counterfactual_probability)}
+      (model threshold ${pct(cf.target_probability)}).</div>
+      <ul>${groups}</ul><small>${cf.note || "Hypothetical comparison, not causal advice."}</small></div>`;
+  }
+  function featGroups(features) {
+    return [["Behavioural", (k) => !k.startsWith("seq_") && !ENTITY_KEYS.has(k)],
+            ["Sequence model", (k) => k.startsWith("seq_")],
+            ["Entity & graph", (k) => ENTITY_KEYS.has(k)]].map(([nm, t]) => {
+      const rows = Object.entries(features).filter(([k]) => t(k));
+      if (!rows.length) return "";
+      return `<details class="block"><summary>${nm} <span style="color:var(--faint)">(${rows.length})</span></summary>
+        <div class="inner feat-grid">${rows.map(([k, v]) => `<div title="${FEATURE_DESC[k] || ""}"><span>${k}</span><b>${v}</b></div>`).join("")}</div></details>`;
+    }).join("");
+  }
+  const WHATIF = [["new_device","unrecognised device"],["new_country","new country"],["new_beneficiary","new payee"],
+    ["is_night","overnight"],["high_risk_mcc","high-risk category"],["impossible_travel","impossible travel"]];
+
+  function selectCase(id, row) {
+    document.querySelectorAll(".txn.sel").forEach((r) => r.classList.remove("sel"));
+    if (row) row.classList.add("sel");
+    const c = cache.get(id); if (!c) return;
+    selected = id;
+    const v = VERDICT[c.action];
+    const alert = c.customer_alert
+      ? `<div class="alertbox"><div class="l">Message sent to customer</div>${c.customer_alert}</div>` : "";
+    const sh = c.shadows || {};
+    const shadow = (sh.rules_only && (sh.rules_only !== c.action || sh.model_only !== c.action))
+      ? `<div class="shadow">Rules alone would <b>${VERDICT[sh.rules_only].label.toLowerCase()}</b> ·
+         AI alone would <b>${VERDICT[sh.model_only].label.toLowerCase()}</b> · together: <b>${v.label.toLowerCase()}</b></div>` : "";
+    const chips = WHATIF.map(([k, l]) => `<button class="wchip ${(c.features[k]||0)>=1?"on":""}" data-k="${k}">${l}</button>`).join("");
+
+    $("#detail").innerHTML = `
+      <div class="vhero ${c.action}">
+        <div class="badge">${I[c.action]}</div>
+        <div>
+          <h2>${v.label}</h2>
+          <div class="line">${money(c.amount)} ${c.channel === "transfer" ? "transfer" : c.mcc.replace(/_/g," ") + " " + c.channel}
+            · ${c.cust_id} · ${c.city || ""} ${c.country} · ${new Date(c.ts).toLocaleTimeString()}</div>
+        </div>
+      </div>
+      ${aiSummary(c.summary)}
+      ${alert}
+      <div class="ask">
+        <div class="q">Was this the right call?</div>
+        <div class="btns">
+          <button class="yes" data-fb="1">${I.up} It was fraud</button>
+          <button class="no" data-fb="0">${I.down} It was fine</button>
+        </div>
+      </div>
+      <details class="block qa" id="qaBlock"><summary>💬 Ask about this transaction</summary>
+        <div class="inner">
+          <div class="hint" style="margin-bottom:8px">Type any question about this specific transaction. Answered by a real LLM (Groq) grounded strictly in this case's own decision, rules, and feature data — it will say so if something is outside that data, not guess.</div>
+          <form id="qaForm" class="qaform">
+            <input type="text" id="qaInput" placeholder="e.g. why was this flagged? would it change if the amount was smaller?" maxlength="500" />
+            <button type="submit">Ask</button>
+          </form>
+          <div id="qaLog" class="qalog"></div>
+        </div>
+      </details>
+      <details class="block whatif"><summary>Try changing the transaction</summary>
+        <div class="inner">
+          <div class="wrow">amount ×<input type="range" id="wmult" min="0.1" max="5" step="0.1" value="1"><b id="wmultv">1.0×</b></div>
+          <div class="wchips">${chips}</div>
+          <div class="wout" id="wout">move a control to see how the decision changes</div>
+        </div>
+      </details>
+      <div class="analyst-only">
+        ${shadow}
+        <details class="block" id="graphBlock"><summary>🔎 Entity graph — real connections</summary>
+          <div class="inner">
+            <div class="hint" style="margin-bottom:8px">Devices, payees, or merchants this transaction shares with OTHER customers Sentinel has scored — built from the same fraud-ring signal behind <code>ring_size</code> and the fan-in/fan-out features. No synthetic decoration: every node and edge is a real transaction.</div>
+            <div id="graphCanvas" style="width:100%;height:320px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)"></div>
+            <div class="hint" id="graphEmpty" style="margin-top:8px;display:none">No shared devices, payees, or merchants found for this transaction — it looks isolated, which is itself a signal (most fraud rings share something).</div>
+          </div>
+        </details>
+        <div class="scores">
+          <div class="scorebox"><div class="l">Risk</div><div class="v">${pct(c.risk)}</div></div>
+          <div class="scorebox"><div class="l">Fraud proba</div><div class="v">${pct(c.fraud_proba)}</div></div>
+          <div class="scorebox"><div class="l">Novelty</div><div class="v">${pct(c.anomaly)}</div></div>
+        </div>
+        <details class="block" id="robustBlock"><summary>🛡️ Adversarial robustness sweep</summary>
+          <div class="inner">
+            <div class="hint" style="margin-bottom:8px">Sweeps ONE feature across its real-world range, holding everything else fixed, and re-scores at every step with the model's real pipeline — the same thing an attacker probing for a blind spot would do by trial and error. A single clean flip means a well-defined decision boundary; several flips in a row mean a jagged, more gameable one.</div>
+            <div class="rrow">
+              <select id="robustFeature"></select>
+              <button class="ghost" id="robustRun">Run sweep</button>
+            </div>
+            <div id="robustResult"></div>
+          </div>
+        </details>
+        <details class="block"><summary>Why — signal breakdown</summary><div class="inner">
+          <ul class="reasons">${c.reasons.map((r) => `<li>${r}</li>`).join("")}</ul>
+          ${counterfactualCard(c.counterfactual)}
+          <div class="cfcaption">Single-feature probes vs training median (Δ calibrated probability; not additive)</div>
+          ${contribBars(c.explanation)}
+        </div></details>
+        ${featGroups(c.features)}
+      </div>`;
+
+    $("#detail").querySelectorAll("[data-fb]").forEach((b) =>
+      b.addEventListener("click", () => sendFeedback(c, +b.dataset.fb)));
+    wireWhatIf(c);
+    loadGraph(c.id);
+    wireQA(c);
+    wireRobustness(c);
+  }
+
+  /* ---------------- natural-language Q&A ---------------- */
+  function wireQA(c) {
+    const form = $("#qaForm"), input = $("#qaInput"), log = $("#qaLog");
+    if (!form) return;
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+      const qEl = document.createElement("div");
+      qEl.className = "qaturn";
+      qEl.innerHTML = `<div class="qaq">${escapeHtml(question)}</div><div class="qaa qaloading">Thinking…</div>`;
+      log.appendChild(qEl);
+      log.scrollTop = log.scrollHeight;
+      input.value = ""; input.disabled = true;
+      try {
+        const r = await fetch("/qa", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ case_id: c.id, question }) });
+        const j = await r.json();
+        const a = qEl.querySelector(".qaa");
+        a.classList.remove("qaloading");
+        if (!r.ok) {
+          a.classList.add("qaerr");
+          a.textContent = j.detail || "Couldn't get an answer.";
+        } else {
+          a.textContent = j.answer;
+        }
+      } catch {
+        const a = qEl.querySelector(".qaa");
+        a.classList.remove("qaloading"); a.classList.add("qaerr");
+        a.textContent = "Couldn't reach the Q&A service.";
+      } finally {
+        input.disabled = false; input.focus();
+        log.scrollTop = log.scrollHeight;
+      }
+    });
+  }
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+  }
+
+  /* ---------------- adversarial robustness sweep ---------------- */
+  const ACTION_COLOR = { ALLOW: "#34d399", REVIEW: "#fbbf24", CHALLENGE: "#fb923c", BLOCK: "#f87171" };
+  let robustFeaturesCache = null, robustChart = null;
+  async function wireRobustness(c) {
+    const sel = $("#robustFeature"), btn = $("#robustRun"), out = $("#robustResult");
+    if (!sel || !btn) return;
+    if (!robustFeaturesCache) {
+      try { robustFeaturesCache = (await (await fetch("/robustness/features")).json()).features; }
+      catch { robustFeaturesCache = ["amount", "new_device", "merchant_fraud_rate"]; }
+    }
+    sel.innerHTML = robustFeaturesCache.map((f) =>
+      `<option value="${f}" ${f in (c.features || {}) ? "" : "disabled"}>${f}</option>`).join("");
+
+    const run = async () => {
+      const feature = sel.value;
+      btn.disabled = true; btn.textContent = "Sweeping…";
+      out.innerHTML = "";
+      try {
+        const r = await fetch(`/robustness/${c.id}?feature=${encodeURIComponent(feature)}&steps=17`);
+        const d = await r.json();
+        if (!r.ok) { out.innerHTML = `<div class="hint">${d.detail || "Couldn't run the sweep."}</div>`; return; }
+        renderRobustChart(d);
+      } catch {
+        out.innerHTML = `<div class="hint">Couldn't reach the sweep endpoint.</div>`;
+      } finally {
+        btn.disabled = false; btn.textContent = "Run sweep";
+      }
+    };
+    btn.onclick = run;
+  }
+
+  function renderRobustChart(d) {
+    const out = $("#robustResult");
+    out.innerHTML = `
+      <div class="rsummary">
+        Base: <span class="verdict v-${d.base_action}">${I[d.base_action]}${d.base_action}</span>
+        at <b>${feat3(d.feature, d.base_value)}</b> →
+        ${d.n_decision_flips === 0
+          ? "the decision never changes across this whole range — a stable boundary here."
+          : d.n_decision_flips === 1
+            ? "exactly one clean flip across the range — a well-defined boundary."
+            : `${d.n_decision_flips} flips across the range — a jagged, more easily-gamed boundary.`}
+      </div>
+      <canvas id="robustCanvas" height="140"></canvas>`;
+    if (robustChart) { robustChart.destroy(); robustChart = null; }
+    const ctx = $("#robustCanvas");
+    if (!ctx) return;
+    robustChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: d.points.map((p) => feat3(d.feature, p.value)),
+        datasets: [{
+          label: "risk",
+          data: d.points.map((p) => p.risk),
+          borderColor: "#5aa2ff",
+          backgroundColor: "rgba(90,162,255,.12)",
+          pointBackgroundColor: d.points.map((p) => ACTION_COLOR[p.action] || "#93a0b4"),
+          pointRadius: 4,
+          fill: true, tension: .25,
+        }],
+      },
+      options: {
+        responsive: true, animation: false,
+        scales: {
+          x: { ticks: { color: "#93a0b4", maxRotation: 0, autoSkip: true }, grid: { display: false } },
+          y: { ticks: { color: "#93a0b4" }, grid: { color: "#262e3d" }, min: 0, max: 1 },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { afterLabel: (ctx) => `decision: ${d.points[ctx.dataIndex].action}` } },
+        },
+      },
+    });
+  }
+  function feat3(name, v) {
+    if (name === "amount") return "$" + Math.round(v).toLocaleString();
+    if (Number.isInteger(v) || Math.abs(v) >= 10) return Math.round(v).toString();
+    return (+v).toFixed(2);
+  }
+
+  /* ---------------- entity graph (forensics) ---------------- */
+  const NODE_COLOR = {
+    focus_customer: "#60a5fa", linked_customer: "#93a0b4",
+    entity_device: "#fb923c", entity_beneficiary: "#f87171", entity_merchant: "#fbbf24",
+  };
+  let cy = null;
+  async function loadGraph(caseId) {
+    const empty = $("#graphEmpty"), canvas = $("#graphCanvas");
+    if (!canvas) return;
+    if (cy) { cy.destroy(); cy = null; }
+    let g;
+    try {
+      const r = await fetch(`/graph/${caseId}`);
+      if (!r.ok) { canvas.style.display = "none"; empty.style.display = "block"; empty.textContent = "Couldn't load the graph for this transaction."; return; }
+      g = await r.json();
+    } catch { return; }
+    if (!g.edges.length) {
+      canvas.style.display = "none"; empty.style.display = "block";
+      empty.textContent = "No shared devices, payees, or merchants found for this transaction — it looks isolated, which is itself a signal (most fraud rings share something).";
+      return;
+    }
+    canvas.style.display = "block"; empty.style.display = "none";
+    const elements = [
+      ...g.nodes.map((n) => ({ data: { id: n.id, label: n.kind.startsWith("entity_") ? `${n.kind.replace("entity_","")}\n${n.label}` : n.label, kind: n.kind, fraudRate: n.fraud_rate } })),
+      ...g.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.source, target: e.target, kind: e.kind } })),
+    ];
+    cy = cytoscape({
+      container: canvas,
+      elements,
+      style: [
+        { selector: "node", style: {
+          "background-color": (n) => NODE_COLOR[n.data("kind")] || "#93a0b4",
+          "label": "data(label)", "color": "#e6ebf5", "font-size": 10, "text-wrap": "wrap",
+          "text-valign": "bottom", "text-margin-y": 6, "width": (n) => n.data("kind") === "focus_customer" ? 34 : 24,
+          "height": (n) => n.data("kind") === "focus_customer" ? 34 : 24,
+          "border-width": (n) => n.data("kind") === "focus_customer" ? 3 : 0,
+          "border-color": "#fff",
+        } },
+        { selector: "edge", style: {
+          "width": 1.5, "line-color": "#3a4356", "curve-style": "bezier",
+          "target-arrow-shape": "none",
+        } },
+      ],
+      layout: { name: "cose", animate: false, padding: 20 },
+      userZoomingEnabled: true, userPanningEnabled: true, boxSelectionEnabled: false,
+    });
+    cy.on("tap", "node", (evt) => {
+      const d = evt.target.data();
+      if (d.fraudRate != null) toast(`<b>${d.label}</b> — ${d.fraudRate >= 0 ? pct(d.fraudRate, 1) : "?"} historical fraud rate on this entity.`);
+    });
+  }
+
+  $("#ringBtn")?.addEventListener("click", async (e) => {
+    const btn = e.target;
+    btn.disabled = true; btn.textContent = "Injecting ring…";
+    try {
+      const j = await (await fetch(`/simulator/inject_ring/${btn.dataset.s}?ring_size=4`, { method: "POST" })).json();
+      toast(`Injected a fraud ring: ${j.ring_size} customers sharing one device/mule account. Click a flagged transaction and open "Entity graph" to see the real connections.`);
+    } catch { toast("Couldn't inject the ring."); }
+    finally { btn.disabled = false; btn.textContent = "Inject a fraud ring (4 customers)"; }
+  });
+
+  function wireWhatIf(c) {
+    const st = { amount_mult: 1 }, m = $("#wmult"), out = $("#wout");
+    let t = null;
+    const run = () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        let j;
+        try {
+          const r = await fetch("/whatif", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ case_id: c.id, overrides: st }) });
+          if (!r.ok) { out.textContent = "this transaction has scrolled out of memory"; return; }
+          j = await r.json();
+        } catch { out.textContent = "couldn't reach the scorer"; return; }
+        const w = j.whatif;
+        out.innerHTML = `<span class="verdict v-${w.action}">${I[w.action]}${VERDICT[w.action].label}</span>
+          risk <b>${pct(w.risk)}</b>${j.flipped ? `<span class="wflip">— changed from ${VERDICT[j.base.action].label}</span>` : ""}
+          <div class="wsum">${j.summary.summary}</div>`;
+      }, 200);
+    };
+    m.addEventListener("input", () => { st.amount_mult = +m.value; $("#wmultv").textContent = (+m.value).toFixed(1) + "×"; run(); });
+    $("#detail").querySelectorAll(".wchip").forEach((b) =>
+      b.addEventListener("click", () => { b.classList.toggle("on"); st[b.dataset.k] = b.classList.contains("on") ? 1 : 0; run(); }));
+  }
+
+  function currentAnalyst() { return ($("#qAnalyst")?.value || "").trim() || "unassigned"; }
+
+  async function sendFeedback(c, label) {
+    const r = await fetch("/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cust_id: c.cust_id, ts: c.ts, amount: c.amount, label,
+        kind: label ? "chargeback" : "disposition", note: c.merchant_id, analyst: currentAnalyst() }) });
+    const j = await r.json().catch(() => ({}));
+    const online = j.recorded?.online_status;
+    let msg = `Recorded: ${c.cust_id} ${money(c.amount)} → ${label ? "fraud" : "legitimate"}. The payee/device risk updated and the next retrain will use it.`;
+    if (online) {
+      msg += online.active
+        ? ` Online correction layer: ${online.updates} labels seen, now actively adjusting similar transactions (±${pct(online.max_adjustment,0)} max).`
+        : ` Online correction layer: ${online.updates}/5 labels seen — needs a few more before it starts adjusting.`;
+    }
+    if (j.recorded?.queue_status) msg += ` Case queue: marked resolved.`;
+    toast(msg);
+    loadQueue();
+  }
+
+  /* ---------------- case queue (multi-analyst) ---------------- */
+  async function loadQueue() {
+    if (!$("#queueSection")) return;
+    let j;
+    try { j = await (await fetch("/queue?status=open")).json(); }
+    catch { return; }
+    const claimedR = await fetch("/queue?status=claimed").then((r) => r.json()).catch(() => ({ items: [] }));
+    const items = [...j.items, ...claimedR.items].sort((a, b) => b.queued_at - a.queued_at);
+    $("#qcounts").innerHTML = `<span class="qc open">${j.counts.open} open</span>
+      <span class="qc claimed">${j.counts.claimed} claimed</span>
+      <span class="qc resolved">${j.counts.resolved} resolved today</span>`;
+    if (!items.length) {
+      $("#qlist").innerHTML = `<div class="hint" style="padding:14px 0">Queue is empty — no REVIEW or CHALLENGE cases waiting right now.</div>`;
+      return;
+    }
+    $("#qlist").innerHTML = items.map((it) => {
+      const c = it.case || {};
+      const mine = it.claimed_by === currentAnalyst();
+      return `<div class="qrow" data-case="${it.case_id}">
+        <div class="qmain">
+          <span class="verdict v-${c.action}">${I[c.action] || ""}${c.action}</span>
+          <b>${money(c.amount)}</b>
+          <span class="muted">${c.cust_id} · ${c.merchant_id || ""} · ${c.city || ""}</span>
+        </div>
+        <div class="qside">
+          ${it.status === "open"
+            ? `<button class="ghost qclaim">Claim</button>`
+            : it.status === "claimed"
+              ? `<span class="qwho">${mine ? "you" : it.claimed_by}</span>
+                 ${mine ? `<button class="ghost qrelease">Release</button>` : ""}`
+              : ""}
+        </div>
+      </div>`;
+    }).join("");
+    $("#qlist").querySelectorAll(".qrow").forEach((row) => {
+      const id = +row.dataset.case;
+      row.querySelector(".qclaim")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const r = await fetch(`/queue/${id}/claim`, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analyst: currentAnalyst() }) });
+        if (!r.ok) { const j = await r.json().catch(() => ({})); toast(`Couldn't claim: ${j.detail || "already taken"}`); }
+        loadQueue();
+      });
+      row.querySelector(".qrelease")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await fetch(`/queue/${id}/release`, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analyst: currentAnalyst() }) });
+        loadQueue();
+      });
+      row.addEventListener("click", () => selectCase(id));
+    });
+  }
+
+  /* ---------------- live data: websocket + polling fallback ---------------- */
+  let ws = null, polling = false, pollTimer = null;
+  function onMsg(msg) {
+    if (msg.type === "snapshot") {
+      renderHero(msg.metrics, msg.drift); renderPolicy(msg.metrics.policy_comparison);
+      (msg.cases || []).slice().reverse().forEach(addTxn);
+    } else if (msg.type === "case") {
+      addTxn(msg.case);
+      $("#feedcount").textContent = (+$("#feedcount").textContent + 1);
+      if (selected === msg.case.id) selectCase(msg.case.id);
+    } else if (msg.type === "metrics") {
+      renderHero(msg.metrics, msg.drift); renderPolicy(msg.metrics.policy_comparison);
+    } else if (msg.type === "queue") {
+      loadQueue();
+    }
+  }
+  setInterval(loadQueue, 6000); // periodic refresh so another analyst's claim/resolve shows up even without a push
+  function setLive(on, txt) { $("#pulse").classList.toggle("on", on); $("#livetxt").textContent = txt; }
+
+  function startPolling() {
+    if (polling) return;
+    polling = true; setLive(true, "live (polling)");
+    const loop = async () => {
+      if (!paused) {
+        try {
+          const r = await fetch("/tick?n=" + Math.max(1, Math.round(rate * 2.5)), { method: "POST" });
+          const j = await r.json();
+          (j.cases || []).forEach((cs) => onMsg({ type: "case", case: cs }));
+          onMsg({ type: "metrics", metrics: j.metrics, drift: j.drift });
+        } catch { setLive(false, "reconnecting…"); }
+      }
+      pollTimer = setTimeout(loop, 2500);
+    };
+    fetch("/cases?limit=40").then((r) => r.json()).then((cs) =>
+      cs.slice().reverse().forEach(addTxn)).catch(() => {});
+    fetch("/metrics").then((r) => r.json()).then((m) => {
+      renderHero(m); renderPolicy(m.policy_comparison);
+    }).catch(() => {});
+    loop();
+  }
+  function connect() {
+    try {
+      ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stream`);
+    } catch { startPolling(); return; }
+    ws.onopen = () => setLive(true, "live");
+    ws.onmessage = (e) => onMsg(JSON.parse(e.data));
+    ws.onclose = () => { setLive(false, "reconnecting…"); if (!polling) setTimeout(tryReconnect, 1500); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+    setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 15000);
+  }
+  let wsFails = 0;
+  function tryReconnect() { if (++wsFails >= 2) startPolling(); else connect(); }
+
+  /* ---------------- controls ---------------- */
+  document.querySelectorAll(".abtn[data-s]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const j = await (await fetch(`/simulator/inject/${b.dataset.s}`, { method: "POST" })).json();
+      toast(`Injected a <b>${b.textContent.toLowerCase()}</b> attack against ${j.cust_id} in ${j.victim_city}. Watch the feed.`);
+      if (j.cases) j.cases.forEach((cs) => onMsg({ type: "case", case: cs }));
+    }));
+  let rate = 2;
+  $("#rate").addEventListener("input", (e) => {
+    rate = +e.target.value; $("#ratev").textContent = rate + "/s";
+    fetch("/simulator/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rate }) });
+  });
+  let paused = false;
+  $("#pauseBtn").addEventListener("click", () => {
+    paused = !paused; $("#pauseBtn").textContent = paused ? "Resume" : "Pause";
+    fetch("/simulator/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ running: !paused }) });
+  });
+  function toast(html) {
+    const t = document.createElement("div"); t.className = "toast"; t.innerHTML = html;
+    document.body.appendChild(t); setTimeout(() => t.remove(), 4600);
+  }
+
+  /* ---------------- manual transaction entry ---------------- */
+  $("#manualForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const custRaw = $("#mCust").value.trim();
+    const body = {
+      cust_id: custRaw || ("manual_" + Math.random().toString(36).slice(2, 8)),
+      amount: parseFloat($("#mAmount").value),
+      merchant_id: $("#mMerchant").value.trim() || "merchant_manual",
+      mcc: $("#mMcc").value,
+      channel: $("#mChannel").value,
+      city: $("#mCity").value.trim(),
+      country: ($("#mCountry").value.trim() || "CA").toUpperCase(),
+      device_id: $("#mDevice").value.trim() || ("dev_manual_" + Math.random().toString(36).slice(2, 6)),
+      label: 0,
+    };
+    if (!body.amount || body.amount <= 0) { toast("Enter a valid amount first."); return; }
+    const btn = e.target.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "Scoring…";
+    try {
+      const r = await fetch("/score", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) { const err = await r.json().catch(() => ({})); toast(`Couldn't score that: ${err.detail || r.statusText}`); return; }
+      const case_ = await r.json();
+      onMsg({ type: "case", case: case_ });
+      $("#feedcount").textContent = (+$("#feedcount").textContent + 1);
+      selectCase(case_.id);
+      toast(`Scored — <b>${VERDICT[case_.action].label}</b>. Click it in the feed for the full explanation.`);
+    } catch { toast("Couldn't reach the scoring API."); }
+    finally { btn.disabled = false; btn.textContent = "Score this transaction"; }
+  });
+
+  /* ---------------- real-data replay ---------------- */
+  $("#replayBtn")?.addEventListener("click", async (e) => {
+    const btn = e.target, schema = btn.dataset.schema, status = $("#replayStatus");
+    btn.disabled = true; btn.textContent = "Replaying…";
+    try {
+      const r = await fetch("/replay", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schema_name: schema, limit: 100 }) });
+      const j = await r.json();
+      if (!r.ok) {
+        status.innerHTML = `No dataset found yet. ${j.detail || "See docs/REAL_DATA.md to download one."}`;
+        return;
+      }
+      status.textContent = `Replayed ${j.replayed} real transactions (${j.cursor}/${j.total_rows} so far from ${schema}).`;
+      toast(`Streamed ${j.replayed} real, historical transactions into the live feed.`);
+    } catch { status.textContent = "Couldn't reach the replay API."; }
+    finally { btn.disabled = false; btn.textContent = "Replay 100 real transactions"; }
+  });
+
+
+  /* ---------------- boot ---------------- */
+  fetch("/health").then((r) => r.json()).then((h) => {
+    if (h.serverless) startPolling(); else connect();
+  }).catch(connect);
+  loadQueue();
+})();

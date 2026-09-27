@@ -1,0 +1,13 @@
+# Runtime dependencies — deployable everywhere, including serverless.
+# Counterfactual explanations use the existing classifier and require no extra
+# explanation package.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+scikit-learn>=1.4
+numpy>=1.26
+scipy>=1.11
+joblib>=1.3
+pydantic>=2.5
+groq>=0.11  # natural-language Q&A on a scored case (/qa) — needs GROQ_API_KEY set; the
+            # rest of the app runs fully offline without it (see docs/QA_SETUP.md)
+# optional: redis>=5  (set SENTINEL_REDIS_URL to share warm state across workers)
