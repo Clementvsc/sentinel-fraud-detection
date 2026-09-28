@@ -20,11 +20,9 @@ from .config import (
     VELOCITY_TXNS_1H,
 )
 
-# An entity's historical fraud rate is only trustworthy once it has been seen
-# in enough transactions. Below this, a "36% fraud rate" may just be 1 fraud
-# out of 3 transactions (or a shared default/placeholder ID), so it can
-# escalate to step-up verification but must not hard-block on its own.
-ENTITY_MIN_TXNS = 20
+# Minimum number of transactions an entity (merchant / device / payee) must
+# have before its historical fraud rate is trusted enough to hard-block.
+ENTITY_MIN_TXNS_FOR_BLOCK = 20
 
 
 @dataclass(frozen=True)
@@ -52,41 +50,11 @@ def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[
     hits: list[RuleHit] = []
     f = feat  # shorthand
 
-    # ------------------------------------------------------------------
-    # Absolute-amount tripwires. These work even for a brand-new customer
-    # with no history, where amount_z is always 0 and the relative rules
-    # below can never fire.
-    # ------------------------------------------------------------------
-    amt = float(txn.get("amount", 0.0))
-    cold = (not baseline) or baseline.get("n", 0.0) < VELOCITY_MIN_HISTORY
-
-    if amt >= 1_000_000:
-        hits.append(RuleHit(
-            "amount_hard_limit", "block",
-            f"Amount ₹{amt:,.0f} exceeds the ₹10,00,000 single-transaction hard limit",
-        ))
-    elif amt >= 200_000 and f["new_device"] >= 1.0 and cold:
-        hits.append(RuleHit(
-            "large_new_device_no_history", "block",
-            f"₹{amt:,.0f} from an unrecognised device on an account with no history",
-        ))
-    elif amt >= 200_000:
-        hits.append(RuleHit(
-            "amount_high", "challenge",
-            f"Amount ₹{amt:,.0f} is above the ₹2,00,000 verification threshold",
-        ))
-    elif f["new_device"] >= 1.0 and amt >= 50_000:
-        hits.append(RuleHit(
-            "new_device_high_amount", "challenge",
-            f"₹{amt:,.0f} from a device this customer has never used",
-        ))
-    elif cold and amt >= 25_000:
-        hits.append(RuleHit(
-            "first_time_large", "flag",
-            f"First-time customer with no history making a ₹{amt:,.0f} payment",
-        ))
-
-    if f["impossible_travel"] >= 1.0:
+    # Guard: only meaningful when there is a previous transaction to compare
+    # against (first-ever transactions have no last location / timestamp).
+    if (f["impossible_travel"] >= 1.0
+            and f["secs_since_last"] > 0
+            and f["dist_from_last_km"] > 0):
         hits.append(RuleHit(
             "impossible_travel", "block",
             f"Impossible travel: {f['dist_from_last_km']:.0f} km in "
@@ -148,33 +116,16 @@ def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[
             f"Unusual velocity: {int(f['txn_count_1h'])} transactions in the past hour",
         ))
 
-    # ------------------------------------------------------------------
-    # Known-bad entity. A fraud rate is only evidence if the entity has
-    # enough history behind it. If the feature pipeline supplies
-    # ``entity_txn_count`` (transactions seen on the riskiest entity) and it
-    # is >= ENTITY_MIN_TXNS, the rate is trusted and the rule may block.
-    # If the count is missing or too low, the same signal only escalates to
-    # step-up verification, so one contaminated / placeholder entity can no
-    # longer hard-block genuine customers.
-    # ------------------------------------------------------------------
-    entity_rate = f.get("entity_max_fraud_rate", 0.0)
-    if entity_rate >= ENTITY_FRAUD_RATE_BLOCK:
-        entity_n = f.get("entity_txn_count")
-        trusted = entity_n is not None and entity_n >= ENTITY_MIN_TXNS
-        if trusted:
-            hits.append(RuleHit(
-                "known_bad_entity", "block",
-                f"Merchant / device / payee on this transaction has a "
-                f"{entity_rate*100:.0f}% historical fraud rate "
-                f"over {int(entity_n)} transactions",
-            ))
-        else:
-            seen = f"only {int(entity_n)} transactions" if entity_n is not None else "limited history"
-            hits.append(RuleHit(
-                "suspect_entity_low_evidence", "challenge",
-                f"Merchant / device / payee shows a {entity_rate*100:.0f}% fraud rate "
-                f"but with {seen} — verifying rather than blocking",
-            ))
+    # Only trust an entity's fraud rate once it has enough history behind it.
+    # NOTE: requires features.py to supply "entity_txn_count"; if the key is
+    # missing it defaults to 0 and this rule will not fire.
+    if (f.get("entity_max_fraud_rate", 0.0) >= ENTITY_FRAUD_RATE_BLOCK
+            and f.get("entity_txn_count", 0.0) >= ENTITY_MIN_TXNS_FOR_BLOCK):
+        hits.append(RuleHit(
+            "known_bad_entity", "block",
+            f"Merchant / device / payee on this transaction has a "
+            f"{f['entity_max_fraud_rate']*100:.0f}% historical fraud rate",
+        ))
 
     if f.get("ring_size", 0.0) >= RING_SIZE_CHALLENGE:
         hits.append(RuleHit(
