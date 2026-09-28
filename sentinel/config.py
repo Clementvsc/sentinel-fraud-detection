@@ -59,6 +59,22 @@ HIGH_RISK_MCC = {"crypto", "gift_card", "wire_transfer"}
 ENTITY_FRAUD_RATE_BLOCK = 0.22   # a payee/device seen >=22% on fraud (~70x base rate) is blocked
 RING_SIZE_CHALLENGE = 4          # distinct victims sharing this device/beneficiary
 
+# Absolute sanity ceiling, independent of any customer's history. Without this,
+# a brand-new customer's FIRST transaction sets amount_z = 0 by construction
+# (there's no personal baseline yet to be anomalous against), so a physically
+# impossible amount can sail through every history-relative rule untouched.
+# INR 10 crore (100,000,000) is far above any plausible single retail/UPI/wire
+# transaction; it exists purely to catch garbage/fat-fingered/absurd input.
+MAX_PLAUSIBLE_AMOUNT = 10_00_00_000.0   # INR 10,00,00,000 = 10 crore
+
+# A customer with fewer than this many real transactions doesn't have a
+# trustworthy personal mean/std yet; amount_z falls back to a population
+# baseline instead of letting a new transaction become its own mean (which
+# always makes amount_z == 0, no matter how large the amount is).
+AMOUNT_BASELINE_MIN_HISTORY = 3
+POPULATION_MEAN_AMOUNT = 2500.0   # rough INR retail/UPI median — cold-start fallback only
+POPULATION_STD_AMOUNT = 4000.0
+
 # --------------------------------------------------------------------------- #
 # Entity aggregation  (Bayesian-smoothed historical fraud rates)
 # --------------------------------------------------------------------------- #

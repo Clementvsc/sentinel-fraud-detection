@@ -16,6 +16,7 @@ from .config import (
     CARD_TESTING_TXNS_5M, CARD_TESTING_MAX_AMOUNT, VELOCITY_MIN_HISTORY, VELOCITY_PERSONAL_MULT,
     ENTITY_FRAUD_RATE_BLOCK,
     HIGH_RISK_MCC,
+    MAX_PLAUSIBLE_AMOUNT,
     RING_SIZE_CHALLENGE,
     VELOCITY_TXNS_1H,
 )
@@ -45,6 +46,18 @@ def _faster_than_usual(f: dict, window: str, baseline: dict | None) -> bool:
 def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[RuleHit]:
     hits: list[RuleHit] = []
     f = feat  # shorthand
+
+    if f["amount"] > MAX_PLAUSIBLE_AMOUNT:
+        # Independent of any customer's history: amount_z is 0 by
+        # construction on a brand-new customer's first transaction (there is
+        # no personal baseline yet), so every history-relative rule below is
+        # blind to a physically implausible amount on exactly that
+        # transaction. This absolute ceiling catches it regardless.
+        hits.append(RuleHit(
+            "implausible_amount", "block",
+            f"Amount ₹{f['amount']:,.2f} is far beyond any plausible single "
+            f"transaction — likely bad input or a data-entry error",
+        ))
 
     if f["impossible_travel"] >= 1.0:
         hits.append(RuleHit(

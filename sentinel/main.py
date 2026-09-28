@@ -27,7 +27,14 @@ from .simulator import Simulator
 
 class TransactionIn(BaseModel):
     cust_id: str
-    amount: float = Field(gt=0)
+    # Positive and below 1e18 rejects only literal numeric garbage (a pasted
+    # or fat-fingered value near/at float overflow territory). Everything
+    # below that — including amounts far beyond any real transaction — is
+    # intentionally let through to be scored: sentinel.rules.MAX_PLAUSIBLE_AMOUNT
+    # (INR 10 crore) turns it into an explained BLOCK decision instead of a
+    # bare 422, which is more useful for a fraud system (and a demo) than a
+    # generic HTTP validation error.
+    amount: float = Field(gt=0, lt=1e18)
     mcc: str = "retail"
     channel: str = "online"
     merchant_id: str = "merchant_unknown"

@@ -17,7 +17,9 @@ from collections import deque
 from datetime import datetime
 from typing import Deque, Optional, Tuple
 
-from .config import HIGH_RISK_MCC, IMPOSSIBLE_TRAVEL_KMH, IMPOSSIBLE_TRAVEL_MIN_KM
+from .config import (AMOUNT_BASELINE_MIN_HISTORY, HIGH_RISK_MCC,
+                     IMPOSSIBLE_TRAVEL_KMH, IMPOSSIBLE_TRAVEL_MIN_KM,
+                     POPULATION_MEAN_AMOUNT, POPULATION_STD_AMOUNT)
 from .entities import ENTITY_FEATURES, EntityRegistry
 
 EARTH_RADIUS_KM = 6371.0
@@ -173,8 +175,19 @@ class ProfileState:
 def compute_features(txn: dict, ps: ProfileState,
                      entities: EntityRegistry | None, now: datetime) -> dict:
     amt = float(txn["amount"])
-    std = ps.std or max(ps.mean * 0.35, 1.0)
-    mean = ps.mean or amt
+    if ps.n < AMOUNT_BASELINE_MIN_HISTORY:
+        # A near-new customer has no trustworthy personal mean/std yet.
+        # Falling back to "this transaction is its own mean" (the old
+        # behaviour) forces amount_z == 0 ALWAYS on exactly the transaction
+        # -- a brand-new account's first payment -- where a sanity check on
+        # the amount matters most. Fall back to a population baseline
+        # instead, so an implausible first transaction still reads as
+        # anomalous rather than "perfectly average by definition".
+        mean = ps.mean if ps.n > 0 else POPULATION_MEAN_AMOUNT
+        std = ps.std or POPULATION_STD_AMOUNT
+    else:
+        std = ps.std or max(ps.mean * 0.35, 1.0)
+        mean = ps.mean or amt
 
     if ps.last_ts is not None:
         secs = min((now - ps.last_ts).total_seconds(), _MAX_GAP_SECONDS)

@@ -544,7 +544,12 @@
     // inventing a number here.
     const ageRaw = $("#mAge")?.value.trim();
     if (ageRaw) body.cust_age = parseInt(ageRaw, 10);
-    if (!body.amount || body.amount <= 0) { toast("Enter a valid amount first."); return; }
+    if (!body.amount || body.amount <= 0 || !isFinite(body.amount)) { toast("Enter a valid amount first."); return; }
+    // Anything short of literal numeric garbage is sent to the server to be
+    // *scored* rather than rejected client-side — an implausibly large but
+    // finite amount should come back as an explained BLOCK from Sentinel's
+    // own rules, not a silently swallowed form error.
+    if (body.amount >= 1e18) { toast("That amount is too large to submit — check for a typo."); return; }
     const btn = e.target.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Scoring…";
     try {
