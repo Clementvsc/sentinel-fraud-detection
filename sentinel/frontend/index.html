@@ -4,14 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sentinel — AI Banking Fraud Detection</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750;800&display=swap" rel="stylesheet" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z' fill='%235aa2ff'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z' fill='%2322d3ee'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
+<div class="bg-fx" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow-cyan"></div>
+  <div class="bg-glow bg-glow-violet"></div>
+  <div class="bg-noise"></div>
+</div>
 <div class="wrap">
-  <header class="top">
+  <header class="top glass">
     <div class="brand">
       <div class="mark">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -30,7 +34,7 @@
     <div class="livepill"><span class="pulse" id="pulse"></span><span id="livetxt">connecting…</span></div>
   </header>
 
-  <div class="intro" id="intro">
+  <div class="intro glass" id="intro">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
     <div><b>What you're looking at:</b> every card payment and transfer below is being scored in real time.
     Sentinel decides to <b>allow</b>, <b>flag</b>, <b>ask for verification</b>, or <b>block</b> it — before the money moves.
@@ -40,14 +44,14 @@
 
   <section class="hero" id="hero"></section>
 
-  <section class="policy" id="policy">
+  <section class="policy glass" id="policy">
     <h3>Rules and AI, working together</h3>
     <div class="lead" id="policyLead">Scoring the same live traffic three ways.</div>
     <div class="pbars" id="pbars"></div>
   </section>
 
   <div class="grid">
-    <div class="card">
+    <div class="card glass">
       <div class="hd"><h3>Live transactions</h3><span class="count" id="feedcount">0</span></div>
       <details class="sim" id="sim" open>
         <summary>Simulate an attack</summary>
@@ -153,7 +157,7 @@
       <div class="feed" id="feed"></div>
     </div>
 
-    <div class="card">
+    <div class="card glass">
       <div class="hd"><h3>Selected transaction</h3></div>
       <div class="detail" id="detail">
         <div class="empty">
@@ -164,7 +168,7 @@
     </div>
   </div>
 
-  <section class="agepanel" id="agePanel">
+  <section class="agepanel glass" id="agePanel">
     <div class="hd">
       <div>
         <h3>Who is being affected — by age</h3>
@@ -175,7 +179,7 @@
     <div id="ageBody" class="agebody"><div class="hint">Score some transactions, then hit Refresh.</div></div>
   </section>
 
-  <section class="evalpanel" id="evalPanel">
+  <section class="evalpanel glass" id="evalPanel">
     <div class="hd">
       <div>
         <h3>How good is the model? — independent test</h3>
@@ -186,13 +190,11 @@
   </section>
 
   <div class="charts analyst-only">
-    <div class="chartcard"><h3>Decisions over time</h3><canvas id="decChart"></canvas></div>
-    <div class="chartcard"><h3>Risk-score distribution</h3><canvas id="riskChart"></canvas></div>
+    <div class="chartcard glass"><h3>Decisions over time</h3><canvas id="decChart"></canvas></div>
+    <div class="chartcard glass"><h3>Risk-score distribution</h3><canvas id="riskChart"></canvas></div>
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.1/dist/cytoscape.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

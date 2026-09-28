@@ -1,3 +1,417 @@
+/* mini-charts.js — Sentinel's own tiny stacked/grouped bar-chart renderer.
+ *
+ * This is a first-party, from-scratch replacement for the small slice of the
+ * Chart.js v4 API that app.js relies on: `new Chart(canvas, config)` with a
+ * bar chart, mutable `chart.data.labels` / `chart.data.datasets[i].data`
+ * arrays (push/shift), and `chart.update()` to repaint. It exists purely so
+ * the dashboard has zero external/CDN script dependencies while leaving
+ * app.js's charting calls completely untouched.
+ *
+ * Supported config shape (exactly what app.js uses):
+ *   new Chart(canvasEl, {
+ *     type: "bar",
+ *     data: { labels: [...], datasets: [{ label, data: [...], backgroundColor }] },
+ *     options: {
+ *       responsive, animation,
+ *       scales: { x: { stacked, ticks:{color}, grid:{display} },
+ *                 y: { stacked, ticks:{color}, grid:{color} } },
+ *       plugins: { legend: { display, labels:{ color, boxWidth } } }
+ *     }
+ *   })
+ *
+ * `backgroundColor` may be a single CSS color (applied to every bar in that
+ * dataset) or an array of colors (one per data point) — both forms are used
+ * by app.js.
+ */
+(function (global) {
+  "use strict";
+
+  function dpr() { return Math.max(1, Math.min(2, global.devicePixelRatio || 1)); }
+
+  class MiniChart {
+    constructor(canvas, config) {
+      this.canvas = canvas;
+      this.config = config || {};
+      this.data = this.config.data || { labels: [], datasets: [] };
+      this.options = this.config.options || {};
+      this._ro = null;
+      if (canvas && global.ResizeObserver) {
+        this._ro = new ResizeObserver(() => this._draw());
+        this._ro.observe(canvas);
+      }
+      // Draw once after layout settles (canvas has no intrinsic CSS size yet
+      // on first paint in some browsers).
+      requestAnimationFrame(() => this._draw());
+    }
+
+    update() { this._draw(); }
+
+    destroy() {
+      if (this._ro) this._ro.disconnect();
+      this.canvas = null;
+    }
+
+    _draw() {
+      const canvas = this.canvas;
+      if (!canvas || !canvas.isConnected) return;
+      const cssW = canvas.clientWidth || canvas.parentElement?.clientWidth || 300;
+      const cssH = canvas.clientHeight || 220;
+      const ratio = dpr();
+      canvas.width = Math.max(1, Math.round(cssW * ratio));
+      canvas.height = Math.max(1, Math.round(cssH * ratio));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const labels = this.data.labels || [];
+      const datasets = this.data.datasets || [];
+      const stacked = !!(this.options.scales?.x?.stacked);
+      const legendOn = this.options.plugins?.legend?.display !== false && datasets.some((d) => d.label);
+      const tickColor = this.options.scales?.y?.ticks?.color || "rgba(230,235,245,.55)";
+      const gridColor = this.options.scales?.y?.grid?.color || "rgba(255,255,255,.06)";
+
+      const padTop = 10, padBottom = labels.length ? 22 : 8, padLeft = 34;
+      const padRight = 8;
+      const legendH = legendOn ? 20 : 0;
+      const plotX = padLeft, plotY = padTop;
+      const plotW = Math.max(10, cssW - padLeft - padRight);
+      const plotH = Math.max(10, cssH - padTop - padBottom - legendH);
+
+      if (!labels.length || !datasets.length) {
+        ctx.font = "12px var(--font, sans-serif)";
+        ctx.fillStyle = tickColor;
+        ctx.textAlign = "center";
+        ctx.fillText("waiting for data…", cssW / 2, cssH / 2);
+        return;
+      }
+
+      // y max
+      let maxVal = 0;
+      if (stacked) {
+        for (let i = 0; i < labels.length; i++) {
+          let sum = 0;
+          for (const ds of datasets) sum += Number(ds.data[i] || 0);
+          if (sum > maxVal) maxVal = sum;
+        }
+      } else {
+        for (const ds of datasets) for (const v of ds.data) if (Number(v) > maxVal) maxVal = Number(v);
+      }
+      if (maxVal <= 0) maxVal = 1;
+      // round up to a "nice" step
+      const rawStep = maxVal / 4;
+      const mag = Math.pow(10, Math.floor(Math.log10(rawStep || 1)));
+      const niceStep = Math.ceil(rawStep / mag) * mag || 1;
+      const yMax = niceStep * 4;
+
+      // gridlines + y labels
+      ctx.strokeStyle = gridColor;
+      ctx.fillStyle = tickColor;
+      ctx.font = "10px var(--font, sans-serif)";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let g = 0; g <= 4; g++) {
+        const y = plotY + plotH - (g / 4) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(plotX, y);
+        ctx.lineTo(plotX + plotW, y);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const val = niceStep * g;
+        ctx.fillText(val >= 1000 ? (val / 1000).toFixed(1) + "k" : String(Math.round(val)), plotX - 6, y);
+      }
+
+      // bars
+      const n = labels.length;
+      const groupW = plotW / n;
+      const barPad = groupW * 0.22;
+      const innerW = groupW - barPad * 2;
+
+      for (let i = 0; i < n; i++) {
+        const gx = plotX + i * groupW + barPad;
+        if (stacked) {
+          let yCursor = plotY + plotH;
+          for (const ds of datasets) {
+            const v = Number(ds.data[i] || 0);
+            const h = (v / yMax) * plotH;
+            const color = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+            ctx.fillStyle = color || "#5aa2ff";
+            const y0 = yCursor - h;
+            roundRectTop(ctx, gx, y0, innerW, h, i === n - 1 || true ? 0 : 0);
+            ctx.fill();
+            yCursor = y0;
+          }
+        } else {
+          const barW = innerW / datasets.length;
+          datasets.forEach((ds, di) => {
+            const v = Number(ds.data[i] || 0);
+            const h = (v / yMax) * plotH;
+            const color = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+            ctx.fillStyle = color || "#5aa2ff";
+            const bx = gx + di * barW;
+            const y0 = plotY + plotH - h;
+            ctx.beginPath();
+            const r = Math.min(3, barW * 0.3);
+            roundRectTopPath(ctx, bx + 1, y0, Math.max(1, barW - 2), h, r);
+            ctx.fill();
+          });
+        }
+        // x label
+        if (this.options.scales?.x?.grid?.display !== undefined || true) {
+          ctx.fillStyle = tickColor;
+          ctx.font = "10px var(--font, sans-serif)";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          const lbl = String(labels[i]);
+          if (n <= 14 || i % Math.ceil(n / 14) === 0) {
+            ctx.fillText(lbl, gx + innerW / 2, plotY + plotH + 5);
+          }
+        }
+      }
+
+      // legend
+      if (legendOn) {
+        const items = datasets.filter((d) => d.label);
+        ctx.font = "10.5px var(--font, sans-serif)";
+        const gap = 14, box = 9;
+        let widths = items.map((d) => box + 5 + ctx.measureText(d.label).width);
+        let total = widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1);
+        let x = Math.max(padLeft, (cssW - total) / 2);
+        const y = cssH - legendH + 6;
+        items.forEach((d, i) => {
+          const color = Array.isArray(d.backgroundColor) ? d.backgroundColor[0] : d.backgroundColor;
+          ctx.fillStyle = color || "#5aa2ff";
+          ctx.beginPath();
+          ctx.roundRect ? ctx.roundRect(x, y, box, box, 2) : ctx.rect(x, y, box, box);
+          ctx.fill();
+          ctx.fillStyle = tickColor;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(d.label, x + box + 5, y + box / 2 + 1);
+          x += widths[i] + gap;
+        });
+      }
+    }
+  }
+
+  function roundRectTop(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    roundRectTopPath(ctx, x, y, w, h, r);
+  }
+  function roundRectTopPath(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    if (h <= 0 || w <= 0) { ctx.moveTo(x, y); return; }
+    ctx.moveTo(x, y + h);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h);
+    ctx.closePath();
+  }
+
+  global.Chart = MiniChart;
+})(window);
+/* mini-graph.js — Sentinel's own tiny force-directed graph renderer.
+ *
+ * First-party, from-scratch replacement for the small slice of the
+ * Cytoscape.js API that app.js relies on for the "entity graph" forensics
+ * view: `cytoscape({container, elements, style, layout, ...})` returning an
+ * object with `.destroy()` and `.on("tap", "node", handler)`, where the
+ * handler receives an event whose `target.data()` returns the tapped node's
+ * data object. It exists purely so the dashboard has zero external/CDN
+ * script dependencies — app.js's graph-loading logic is untouched.
+ *
+ * Supported style selectors (exactly what app.js passes):
+ *   { selector: "node", style: { "background-color": fn(node), "label": "data(label)",
+ *       "color", "font-size", "width": fn(node), "height": fn(node),
+ *       "border-width": fn(node), "border-color" } }
+ *   { selector: "edge", style: { "width", "line-color" } }
+ *
+ * Layout: only `{ name: "cose", ... }` is used — approximated here with a
+ * lightweight force simulation (repulsion + spring edges + centering),
+ * settled synchronously before first paint so there's no visible "jiggle".
+ */
+(function (global) {
+  "use strict";
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  function styleFor(rules, selector) {
+    const r = rules.find((x) => x.selector === selector);
+    return (r && r.style) || {};
+  }
+  function resolve(val, nodeApi) {
+    return typeof val === "function" ? val(nodeApi) : val;
+  }
+
+  class NodeHandle {
+    constructor(d) { this._d = d; }
+    data(key) { return key ? this._d[key] : this._d; }
+  }
+
+  class MiniGraph {
+    constructor(opts) {
+      this.container = opts.container;
+      this.elements = opts.elements || [];
+      this.styleRules = opts.style || [];
+      this._handlers = { tap: { node: [] } };
+      this._build();
+    }
+
+    on(evt, selector, handler) {
+      if (!this._handlers[evt]) this._handlers[evt] = {};
+      if (!this._handlers[evt][selector]) this._handlers[evt][selector] = [];
+      this._handlers[evt][selector].push(handler);
+      return this;
+    }
+
+    destroy() {
+      if (this.container) this.container.innerHTML = "";
+    }
+
+    _build() {
+      const nodes = this.elements
+        .filter((e) => e.data && e.data.id != null && e.data.source == null)
+        .map((e) => ({ ...e.data }));
+      const edges = this.elements
+        .filter((e) => e.data && e.data.source != null)
+        .map((e) => ({ ...e.data }));
+      const nodeStyle = styleFor(this.styleRules, "node");
+      const edgeStyle = styleFor(this.styleRules, "edge");
+
+      const w = this.container.clientWidth || 600;
+      const h = this.container.clientHeight || 320;
+
+      // --- tiny force layout (Fruchterman-Reingold-ish), settled before paint ---
+      const idx = new Map(nodes.map((n, i) => [n.id, i]));
+      const pos = nodes.map((n, i) => {
+        const a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+        const r = Math.min(w, h) * 0.32;
+        return { x: w / 2 + Math.cos(a) * r + (Math.random() - 0.5) * 8,
+                 y: h / 2 + Math.sin(a) * r + (Math.random() - 0.5) * 8 };
+      });
+      const k = Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.9;
+      const iterations = nodes.length > 40 ? 80 : 160;
+      for (let it = 0; it < iterations; it++) {
+        const disp = nodes.map(() => ({ x: 0, y: 0 }));
+        // repulsion
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+            let dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+            const force = (k * k) / dist;
+            dx /= dist; dy /= dist;
+            disp[i].x += dx * force; disp[i].y += dy * force;
+            disp[j].x -= dx * force; disp[j].y -= dy * force;
+          }
+        }
+        // spring attraction along edges
+        for (const e of edges) {
+          const i = idx.get(e.source), j = idx.get(e.target);
+          if (i == null || j == null) continue;
+          let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          const force = (dist * dist) / k;
+          dx /= dist; dy /= dist;
+          disp[i].x -= dx * force; disp[i].y -= dy * force;
+          disp[j].x += dx * force; disp[j].y += dy * force;
+        }
+        // centering pull + apply, cooling
+        const temp = Math.max(1, k * (1 - it / iterations));
+        for (let i = 0; i < nodes.length; i++) {
+          disp[i].x += (w / 2 - pos[i].x) * 0.01;
+          disp[i].y += (h / 2 - pos[i].y) * 0.01;
+          const dlen = Math.sqrt(disp[i].x ** 2 + disp[i].y ** 2) || 0.01;
+          const capped = Math.min(dlen, temp);
+          pos[i].x += (disp[i].x / dlen) * capped;
+          pos[i].y += (disp[i].y / dlen) * capped;
+          pos[i].x = Math.max(24, Math.min(w - 24, pos[i].x));
+          pos[i].y = Math.max(24, Math.min(h - 24, pos[i].y));
+        }
+      }
+
+      // --- render SVG ---
+      this.container.innerHTML = "";
+      const svg = document.createElementNS(SVGNS, "svg");
+      svg.setAttribute("width", "100%");
+      svg.setAttribute("height", "100%");
+      svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+      svg.style.display = "block";
+
+      const defs = document.createElementNS(SVGNS, "defs");
+      const glow = document.createElementNS(SVGNS, "filter");
+      glow.setAttribute("id", "mg-glow");
+      glow.setAttribute("x", "-60%"); glow.setAttribute("y", "-60%");
+      glow.setAttribute("width", "220%"); glow.setAttribute("height", "220%");
+      glow.innerHTML = '<feGaussianBlur stdDeviation="3.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>';
+      defs.appendChild(glow);
+      svg.appendChild(defs);
+
+      const edgeGroup = document.createElementNS(SVGNS, "g");
+      const edgeColor = edgeStyle["line-color"] || "rgba(255,255,255,.18)";
+      const edgeWidth = edgeStyle["width"] || 1.5;
+      for (const e of edges) {
+        const i = idx.get(e.source), j = idx.get(e.target);
+        if (i == null || j == null) continue;
+        const line = document.createElementNS(SVGNS, "line");
+        line.setAttribute("x1", pos[i].x); line.setAttribute("y1", pos[i].y);
+        line.setAttribute("x2", pos[j].x); line.setAttribute("y2", pos[j].y);
+        line.setAttribute("stroke", edgeColor);
+        line.setAttribute("stroke-width", edgeWidth);
+        edgeGroup.appendChild(line);
+      }
+      svg.appendChild(edgeGroup);
+
+      const nodeGroup = document.createElementNS(SVGNS, "g");
+      nodes.forEach((n, i) => {
+        const api = new NodeHandle(n);
+        const size = resolve(nodeStyle["width"], api) || 24;
+        const bw = resolve(nodeStyle["border-width"], api) || 0;
+        const bc = nodeStyle["border-color"] || "#fff";
+        const fill = resolve(nodeStyle["background-color"], api) || "#93a0b4";
+        const g = document.createElementNS(SVGNS, "g");
+        g.setAttribute("transform", `translate(${pos[i].x},${pos[i].y})`);
+        g.style.cursor = "pointer";
+
+        const circle = document.createElementNS(SVGNS, "circle");
+        circle.setAttribute("r", size / 2);
+        circle.setAttribute("fill", fill);
+        if (bw) { circle.setAttribute("stroke", bc); circle.setAttribute("stroke-width", bw); }
+        circle.setAttribute("filter", "url(#mg-glow)");
+        g.appendChild(circle);
+
+        const rawLabel = resolve(nodeStyle["label"], api);
+        const labelText = rawLabel === "data(label)" ? n.label : rawLabel;
+        if (labelText) {
+          const text = document.createElementNS(SVGNS, "text");
+          text.setAttribute("y", size / 2 + 12);
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("fill", nodeStyle["color"] || "#e6ebf5");
+          text.setAttribute("font-size", nodeStyle["font-size"] || 10);
+          text.setAttribute("font-family", "var(--font, sans-serif)");
+          String(labelText).split("\n").forEach((line, li) => {
+            const tspan = document.createElementNS(SVGNS, "tspan");
+            tspan.setAttribute("x", 0);
+            tspan.setAttribute("dy", li === 0 ? 0 : "1.1em");
+            tspan.textContent = line;
+            text.appendChild(tspan);
+          });
+          g.appendChild(text);
+        }
+
+        g.addEventListener("click", (evt) => {
+          const handlers = this._handlers.tap?.node || [];
+          const fakeEvt = { target: new NodeHandle(n) };
+          handlers.forEach((h) => h(fakeEvt));
+        });
+        nodeGroup.appendChild(g);
+      });
+      svg.appendChild(nodeGroup);
+      this.container.appendChild(svg);
+    }
+  }
+
+  global.cytoscape = function (opts) { return new MiniGraph(opts); };
+})(window);
 /* Sentinel dashboard — friendly front, full functionality underneath. */
 (() => {
   const $ = (s) => document.querySelector(s);
