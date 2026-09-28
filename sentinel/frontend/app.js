@@ -437,6 +437,21 @@
   };
   const chanIco = (c) => I[c] || I.online;
 
+  // Small circular risk-score gauge (SVG ring), colored by verdict severity.
+  // Purely decorative next to the existing .risknum percentage text — no
+  // effect on scoring or data, just a quicker visual read during a live demo.
+  const RISK_GAUGE_COLOR = { ALLOW: "var(--allow)", REVIEW: "var(--review)", CHALLENGE: "var(--challenge)", BLOCK: "var(--block)" };
+  function riskGaugeSVG(risk, action) {
+    const r = 7, c = 2 * Math.PI * r, frac = Math.max(0, Math.min(1, risk));
+    const color = RISK_GAUGE_COLOR[action] || "var(--muted)";
+    return `<svg class="gauge" viewBox="0 0 18 18" width="18" height="18">
+      <circle cx="9" cy="9" r="${r}" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="2.4"/>
+      <circle cx="9" cy="9" r="${r}" fill="none" stroke="${color}" stroke-width="2.4"
+        stroke-linecap="round" stroke-dasharray="${(c * frac).toFixed(2)} ${c.toFixed(2)}"
+        transform="rotate(-90 9 9)"/>
+    </svg>`;
+  }
+
   const VERDICT = {
     ALLOW: { label: "Allowed", verb: "was allowed through" },
     REVIEW: { label: "Flagged", verb: "was allowed but flagged for an analyst" },
@@ -559,6 +574,39 @@
         <div class="s analyst-only">drift PSI ${(+d.psi).toFixed(3)}${d.psi_raw != null ? ` (raw ${(+d.psi_raw).toFixed(2)})` : ""} · ${m.processed.toLocaleString()} scored</div>
         <div class="s" style="${mode==='analyst'?'display:none':''}">${m.processed.toLocaleString()} transactions scored</div>
       </div>`;
+    countUpStats();
+  }
+
+  /* Animate each hero stat's number from its previous value to the new one.
+     Purely cosmetic: it re-renders only the numeric portion of .stat .v text
+     (extracted with a regex), so "₹1,234.00", "94.7%" etc. keep their exact
+     prefix/suffix/formatting — nothing about what renderHero() computes changes. */
+  function countUpStats() {
+    document.querySelectorAll(".stat .v").forEach((el) => {
+      const text = el.textContent;
+      const m2 = text.match(/-?[\d,]+\.?\d*/);
+      if (!m2) return;
+      const target = parseFloat(m2[0].replace(/,/g, ""));
+      if (!isFinite(target)) return;
+      const decimals = (m2[0].split(".")[1] || "").length;
+      const prev = parseFloat(el.dataset.countFrom || "0") || 0;
+      el.dataset.countFrom = String(target);
+      if (prev === target) return;
+      const dur = 700, t0 = performance.now();
+      const fmt = (v) => {
+        const n = decimals ? v.toFixed(decimals) : Math.round(v).toString();
+        const withCommas = Number(n).toLocaleString("en-IN", decimals ? { minimumFractionDigits: decimals, maximumFractionDigits: decimals } : undefined);
+        return text.replace(m2[0], withCommas);
+      };
+      function tick(now) {
+        const p = Math.min(1, (now - t0) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = fmt(prev + (target - prev) * eased);
+        if (p < 1) requestAnimationFrame(tick);
+        else el.textContent = text;
+      }
+      requestAnimationFrame(tick);
+    });
   }
 
   /* ---------------- policy A/B ---------------- */
@@ -591,7 +639,13 @@
   function addTxn(c) {
     cache.set(c.id, c);
     const el = document.createElement("div");
-    el.className = "txn"; el.dataset.id = c.id;
+    el.className = `txn flash-${c.action}`; el.dataset.id = c.id;
+    // the flash is a one-shot entrance effect; drop the class once its
+    // animation finishes so re-selecting/re-rendering the row later doesn't
+    // replay it, and so the class list doesn't grow unbounded over a long demo.
+    el.addEventListener("animationend", (ev) => {
+      if (ev.animationName && ev.animationName.startsWith("flashglow-")) el.classList.remove(`flash-${c.action}`);
+    });
     const v = VERDICT[c.action];
     const flags = [];
     if (c.features?.new_device >= 1) flags.push("new device");
@@ -608,7 +662,7 @@
       </div>
       <div class="right">
         <span class="verdict v-${c.action}">${I[c.action]}${v.label}</span>
-        <span class="risknum analyst-only">${Math.round(c.risk * 100)}%</span>
+        <span class="riskgauge analyst-only" title="Risk score ${Math.round(c.risk * 100)}%">${riskGaugeSVG(c.risk, c.action)}<span class="risknum">${Math.round(c.risk * 100)}%</span></span>
       </div>`;
     el.addEventListener("click", () => selectCase(c.id, el));
     feed.prepend(el);
