@@ -46,6 +46,40 @@ def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[
     hits: list[RuleHit] = []
     f = feat  # shorthand
 
+    # ------------------------------------------------------------------
+    # Absolute-amount tripwires. These work even for a brand-new customer
+    # with no history, where amount_z is always 0 and the relative rules
+    # below can never fire.
+    # ------------------------------------------------------------------
+    amt = float(txn.get("amount", 0.0))
+    cold = (not baseline) or baseline.get("n", 0.0) < VELOCITY_MIN_HISTORY
+
+    if amt >= 1_000_000:
+        hits.append(RuleHit(
+            "amount_hard_limit", "block",
+            f"Amount ₹{amt:,.0f} exceeds the ₹10,00,000 single-transaction hard limit",
+        ))
+    elif amt >= 200_000 and f["new_device"] >= 1.0 and cold:
+        hits.append(RuleHit(
+            "large_new_device_no_history", "block",
+            f"₹{amt:,.0f} from an unrecognised device on an account with no history",
+        ))
+    elif amt >= 200_000:
+        hits.append(RuleHit(
+            "amount_high", "challenge",
+            f"Amount ₹{amt:,.0f} is above the ₹2,00,000 verification threshold",
+        ))
+    elif f["new_device"] >= 1.0 and amt >= 50_000:
+        hits.append(RuleHit(
+            "new_device_high_amount", "challenge",
+            f"₹{amt:,.0f} from a device this customer has never used",
+        ))
+    elif cold and amt >= 25_000:
+        hits.append(RuleHit(
+            "first_time_large", "flag",
+            f"First-time customer with no history making a ₹{amt:,.0f} payment",
+        ))
+
     if f["impossible_travel"] >= 1.0:
         hits.append(RuleHit(
             "impossible_travel", "block",
