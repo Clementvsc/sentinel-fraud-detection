@@ -1,5 +1,8 @@
 # 🛡️ Sentinel — AI‑Powered Banking Fraud Detection
 
+> 📘 **New here? Start with the [complete guide](docs/HACKATHON_GUIDE.md)** — features, copy-paste install for Windows and Mac, deployment, and a 3-minute demo script.
+
+
 **CDT‑04 · FinTech · Cybersecurity & Digital Trust**
 
 Real‑time detection **and response** for banking fraud. Sentinel scores every

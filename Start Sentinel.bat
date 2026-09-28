@@ -29,7 +29,7 @@ if errorlevel 1 goto setup_failed
 echo Starting Sentinel. Keep the server window open while using the site.
 start "Sentinel server" /D "%CD%" "%PYTHON_EXE%" -m uvicorn sentinel.main:app --host 127.0.0.1 --port 8000
 echo Waiting for the dashboard to be ready...
-powershell -NoProfile -Command "$ready=$false; for($i=0;$i -lt 90;$i++){try{$h=Invoke-RestMethod 'http://127.0.0.1:8000/health' -TimeoutSec 2; if($h.status -eq 'ok'){$ready=$true; break}}catch{}; Start-Sleep -Seconds 1}; if(-not $ready){exit 1}"
+powershell -NoProfile -Command "$ready=$false; for($i=0;$i -lt 300;$i++){try{$h=Invoke-RestMethod 'http://127.0.0.1:8000/health' -TimeoutSec 2; if($h.status -eq 'ok'){$ready=$true; break}}catch{}; Start-Sleep -Seconds 1}; if(-not $ready){exit 1}"
 if errorlevel 1 goto server_failed
 start "" "http://127.0.0.1:8000/"
 echo Dashboard opened in your browser.
