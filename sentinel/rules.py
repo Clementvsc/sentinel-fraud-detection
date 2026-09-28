@@ -20,6 +20,12 @@ from .config import (
     VELOCITY_TXNS_1H,
 )
 
+# An entity's historical fraud rate is only trustworthy once it has been seen
+# in enough transactions. Below this, a "36% fraud rate" may just be 1 fraud
+# out of 3 transactions (or a shared default/placeholder ID), so it can
+# escalate to step-up verification but must not hard-block on its own.
+ENTITY_MIN_TXNS = 20
+
 
 @dataclass(frozen=True)
 class RuleHit:
@@ -142,12 +148,33 @@ def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[
             f"Unusual velocity: {int(f['txn_count_1h'])} transactions in the past hour",
         ))
 
-    if f.get("entity_max_fraud_rate", 0.0) >= ENTITY_FRAUD_RATE_BLOCK:
-        hits.append(RuleHit(
-            "known_bad_entity", "block",
-            f"Merchant / device / payee on this transaction has a "
-            f"{f['entity_max_fraud_rate']*100:.0f}% historical fraud rate",
-        ))
+    # ------------------------------------------------------------------
+    # Known-bad entity. A fraud rate is only evidence if the entity has
+    # enough history behind it. If the feature pipeline supplies
+    # ``entity_txn_count`` (transactions seen on the riskiest entity) and it
+    # is >= ENTITY_MIN_TXNS, the rate is trusted and the rule may block.
+    # If the count is missing or too low, the same signal only escalates to
+    # step-up verification, so one contaminated / placeholder entity can no
+    # longer hard-block genuine customers.
+    # ------------------------------------------------------------------
+    entity_rate = f.get("entity_max_fraud_rate", 0.0)
+    if entity_rate >= ENTITY_FRAUD_RATE_BLOCK:
+        entity_n = f.get("entity_txn_count")
+        trusted = entity_n is not None and entity_n >= ENTITY_MIN_TXNS
+        if trusted:
+            hits.append(RuleHit(
+                "known_bad_entity", "block",
+                f"Merchant / device / payee on this transaction has a "
+                f"{entity_rate*100:.0f}% historical fraud rate "
+                f"over {int(entity_n)} transactions",
+            ))
+        else:
+            seen = f"only {int(entity_n)} transactions" if entity_n is not None else "limited history"
+            hits.append(RuleHit(
+                "suspect_entity_low_evidence", "challenge",
+                f"Merchant / device / payee shows a {entity_rate*100:.0f}% fraud rate "
+                f"but with {seen} — verifying rather than blocking",
+            ))
 
     if f.get("ring_size", 0.0) >= RING_SIZE_CHALLENGE:
         hits.append(RuleHit(
