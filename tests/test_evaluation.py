@@ -191,11 +191,14 @@ def test_fraud_outcome_reaches_entity_stats_only_after_the_delay(trained_model):
     assert f["beneficiary_fraud_rate"] > soon["beneficiary_fraud_rate"] * 3
 
 
-def test_challenged_transactions_do_not_become_the_customers_normal(trained_model, monkeypatch):
-    """A transaction paused for verification must not be learned into the
-    behavioural profile — otherwise one stopped takeover attempt teaches the
-    profile that big transfers to the mule are routine, and the attacker's
-    follow-ups get through."""
+def test_what_the_profile_learns_from_each_decision(trained_model, monkeypatch):
+    """Only transactions that actually went through become the customer's
+    "normal". A CHALLENGE goes through only if the customer passes step-up
+    verification: learned when a genuine customer passes (outcome known),
+    never learned when the fraudster fails, and held pending when the outcome
+    isn't known yet (live /score) until the bank reports it. Otherwise one
+    stopped takeover attempt teaches the profile that big transfers to the
+    mule are routine — or a busy genuine customer's profile freezes."""
     from sentinel import engine as engmod
     from sentinel.decision import Decision
     from sentinel.engine import Engine
@@ -205,7 +208,35 @@ def test_challenged_transactions_do_not_become_the_customers_normal(trained_mode
     eng.profiles["c1"] = ProfileState("c1", "IN", 19.08, 72.88, datetime(2020, 1, 1))
     calls = []
     monkeypatch.setattr(ProfileState, "update", lambda self, txn: calls.append(txn["amount"]))
-    for action in ("CHALLENGE", "BLOCK", "REVIEW", "ALLOW"):
-        monkeypatch.setattr(engmod, "decide", lambda *a, _act=action, **k: Decision(_act, 0.5, ["r"], [], None, False))
-        eng.process({**_mule_txn("c1", datetime(2025, 5, 1, 10), label=0), "amount": {"CHALLENGE": 1.0, "BLOCK": 2.0, "REVIEW": 3.0, "ALLOW": 4.0}[action]})
-    assert calls == [3.0, 4.0]
+
+    def run(action, amount, label, known=True):
+        monkeypatch.setattr(engmod, "decide", lambda *a, **k: Decision(action, 0.5, ["r"], [], None, False))
+        ev = {**_mule_txn("c1", datetime(2025, 5, 1, 10), label=label), "amount": amount}
+        if not known:
+            ev["_label_known"] = False
+        return eng.process(ev)
+
+    run("BLOCK", 1.0, 0)
+    run("REVIEW", 2.0, 0)
+    run("ALLOW", 3.0, 0)
+    assert run("CHALLENGE", 4.0, 1)["verification"] == "simulated_fail"     # fraudster fails
+    assert run("CHALLENGE", 5.0, 0)["verification"] == "simulated_pass"     # genuine passes
+    pending = run("CHALLENGE", 6.0, 0, known=False)
+    assert pending["verification"] == "pending"
+    assert calls == [2.0, 3.0, 5.0]
+    eng.verify_challenge(pending["id"], passed=True)                        # bank reports the OTP pass
+    assert calls == [2.0, 3.0, 5.0, 6.0]
+    with pytest.raises(ValueError):
+        eng.verify_challenge(pending["id"], passed=True)                    # can't resolve twice
+
+
+def test_verification_endpoint(monkeypatch):
+    from fastapi.testclient import TestClient
+    from sentinel.main import app
+    with TestClient(app) as client:
+        r = client.post("/cases/99999999/verification", json={"passed": True})
+        assert r.status_code == 404
+        allowed = client.post("/score", json={"cust_id": "ver_c", "amount": 100.0}).json()
+        if allowed["action"] != "CHALLENGE":
+            r = client.post(f"/cases/{allowed['id']}/verification", json={"passed": True})
+            assert r.status_code == 409          # nothing awaiting verification

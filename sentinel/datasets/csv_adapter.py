@@ -21,6 +21,10 @@
   (card1, addr1), upi_app as the channel-equivalent merchant, and bank folded
   into the merchant id so a "known bad bank/app pairing" is learnable the same
   way a known-bad merchant is elsewhere. Country fixed to IN.
+* **india_bank** — an Indian retail-banking dataset (transactions + customers
+  with age + cards + merchants; INR, Indian states/cities, RuPay/UPI). Each
+  event carries the customer's real `cust_age` from the customer table. See
+  `_india_bank` for what is and isn't loaded.
 * **paysim** — Kaggle "Synthetic Financial Datasets For Fraud Detection"
   (PaySim, Lopez-Rojas et al. 2016): a mobile-money simulator, columns
   step,type,amount,nameOrig,oldbalanceOrg,newbalanceOrig,nameDest,
@@ -67,11 +71,12 @@ def load_csv_events(path: str, schema: str) -> list[dict]:
     if not p.exists():
         raise FileNotFoundError(f"dataset not found: {path}")
     fn = {"sparkov": _sparkov, "ieee": _ieee, "ulb": _ulb, "upi": _upi,
-          "paysim": _paysim}.get(schema)
+          "paysim": _paysim, "india_bank": _india_bank}.get(schema)
     if fn is None:
-        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb | upi | paysim)")
+        raise ValueError(f"unknown CSV schema '{schema}' (sparkov | ieee | ulb | upi | paysim | india_bank)")
     with p.open(newline="") as fh:
-        events = list(fn(csv.DictReader(fh)))
+        reader = csv.DictReader(fh)
+        events = list(fn(reader, p.parent) if schema == "india_bank" else fn(reader))
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -209,6 +214,74 @@ def _paysim(reader: csv.DictReader) -> Iterator[dict]:
             "device_id": f"ps_dev_{cust}", "card_bin": _hash_bin(cust),
             "label": int(_f(r, "isFraud")),
         }
+
+
+# ---------------------------------------------------------------------------
+# india_bank: an Indian retail-banking dataset in four tables — transactions,
+# customers (with AGE), cards and merchants. Point SENTINEL_DATA / the replay
+# path at the transactions file; the customer table is found beside it.
+_IB_MCC = {
+    "Grocery": "grocery", "Food Delivery": "restaurant", "Fuel": "transport",
+    "Utilities": "utilities", "Hospital": "utilities", "Education": "utilities",
+    "Financial Services": "utilities", "Fashion": "retail", "Pharmacy": "retail",
+    "Ecommerce": "retail", "Entertainment": "entertainment", "Electronics": "electronics",
+    "Hotel": "travel", "Travel": "travel", "Airline": "travel",
+}
+_IB_CUSTOMER_FILES = ("Cusmtomer_data.csv", "Customer_data.csv", "customers.csv")
+
+
+def _india_bank(reader: csv.DictReader, folder: Path) -> Iterator[dict]:
+    """Rows -> events, with each customer's real age from the customer table.
+
+    * Only `Transaction_Status == Successful` rows are loaded. A decline is the
+      bank's existing system's verdict (59.6 % of declines are labelled fraud
+      in this data) — scoring on it would leak the answer, and a declined
+      attempt never redefines "normal" behaviour.
+    * Card status (expired / blocked / lost) is checked by core banking before
+      a fraud model sees the transaction, so it is not a model input here.
+    * No coordinates in the source: geo features are neutral (lat/lon 0) and
+      `Is_International` marks the transaction as foreign."""
+    ages: dict[str, int] = {}
+    for name in _IB_CUSTOMER_FILES:
+        f = folder / name
+        if f.exists():
+            with f.open(newline="") as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        ages[r["Customer_ID"]] = int(float(r["Age"]))
+                    except (KeyError, ValueError):
+                        pass
+            break
+    for r in reader:
+        if (r.get("Transaction_Status") or "").strip() != "Successful":
+            continue
+        try:
+            ts = datetime.strptime(f"{r['Transaction_Date']} {r['Transaction_Time']}", "%Y-%m-%d %H:%M:%S")
+        except (KeyError, ValueError):
+            continue
+        cust = (r.get("Customer_ID") or "").strip()
+        method = (r.get("Payment_Method") or "").strip()
+        ch_raw = (r.get("Transaction_Channel") or "").strip()
+        channel = ("atm" if ch_raw == "ATM" else "pos" if ch_raw == "POS"
+                   else "transfer" if method in ("UPI", "Net Banking") else "online")
+        foreign = str(r.get("Is_International", "0")).strip() == "1"
+        ev = {
+            "type": "txn", "ts": ts, "cust_id": f"ib_{cust}",
+            "amount": _f(r, "Transaction_Amount"),
+            "mcc": _IB_MCC.get((r.get("Merchant_Category") or "").strip(), "retail"),
+            "channel": channel,
+            "merchant_id": (r.get("Merchant_ID") or "ib_merchant").strip(),
+            "beneficiary": "",
+            "country": "XX" if foreign else "IN",
+            "city": (r.get("Merchant_City") or "").strip(),
+            "lat": 0.0, "lon": 0.0,
+            "device_id": f"ib_{cust}_{(r.get('Device_Type') or 'device').strip().replace(' ', '_')}",
+            "card_bin": (r.get("Card_ID") or "?").strip(),
+            "label": int(_f(r, "Fraud_Flag")),
+        }
+        if cust in ages:
+            ev["cust_age"] = ages[cust]
+        yield ev
 
 
 _MCC_MAP = {

@@ -52,6 +52,11 @@ their device or card; the test world is never used for training or tuning.
 **Real data — ULB benchmark, 284,807 transactions, out‑of‑time (classifier):** ROC‑AUC
 **0.92**, PR‑AUC 0.65, Brier 0.0038 → **0.0005** after calibration.
 
+**Indian banking dataset (generated, 227k INR transactions with customer ages):** the shipped
+model does not transfer (ROC‑AUC ≈ 0.46); retrained on it, the same pipeline reaches out‑of‑time
+ROC‑AUC **0.86**, PR‑AUC 0.28 (≈ 20× random). The point for a bank: Sentinel is a pipeline you train
+on your own history, and it tells you honestly how well that worked.
+
 **Recall by attack type:** account_takeover 100 % · card_testing 100 % · geo_consistent_ato 100 % · slow_drip 100 % · stolen_card_geo 100 % · bust_out 86 % · amount_just_under 74 %.
 
 ---
@@ -103,5 +108,5 @@ their device or card; the test world is never used for training or tuning.
 Python · FastAPI · scikit‑learn (HistGradientBoosting + IsolationForest +
 isotonic) · grouped counterfactual search · a pure‑Python sequence model · WebSocket · Docker + Redis.
 `pytest` 80+ green, one command to run, **₹0** — all OSS, all local.
-Real‑data adapters for Indian UPI, PaySim, Kaggle ULB / IEEE‑CIS / Sparkov (`docs/DATA.md`), CSV upload, a
+Dataset adapters for an Indian retail-banking dataset (with customer ages), UPI-style and PaySim files, Kaggle ULB / IEEE‑CIS / Sparkov (`docs/DATA.md`), CSV upload, a
 model card, an evaluation report and a fairness audit.

@@ -31,6 +31,9 @@ Following the *Model Cards for Model Reporting* format (Mitchell et al., 2019).
   customer data.
 - **Real‑data validation:** ULB / MLG Credit Card Fraud (OpenML 1597, CC‑BY),
   284,807 real transactions — see [REAL_DATA_VALIDATION.md](REAL_DATA_VALIDATION.md).
+- **Indian banking dataset (generated):** the shipped model does not transfer to it
+  (ROC‑AUC ≈ 0.46); retrained on it, out‑of‑time ROC‑AUC 0.86 / PR‑AUC 0.28. Deploying
+  institutions must retrain and validate on their own labelled history.
 - **Feature pipeline is identical** offline and online; entity aggregates are
   built by replaying events in timestamp order. Fraud *outcomes* reach the
   entity statistics only after a delay (default 72 h, `SENTINEL_LABEL_DELAY_HOURS`)

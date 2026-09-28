@@ -258,6 +258,16 @@
     const v = VERDICT[c.action];
     const alert = c.customer_alert
       ? `<div class="alertbox"><div class="l">Message sent to customer</div>${c.customer_alert}</div>` : "";
+    const VER = {
+      pending: `<div class="verif pending"><div class="l">Verification (OTP) result</div>
+        <div class="btns"><button data-ver="1">Customer passed</button><button data-ver="0">Verification failed</button></div>
+        <div class="hint">Passed = the payment goes through and becomes part of this customer's normal behaviour. Failed = recorded as confirmed fraud.</div></div>`,
+      passed: `<div class="verif ok">Customer passed verification — payment went through.</div>`,
+      failed: `<div class="verif bad">Verification failed — recorded as confirmed fraud.</div>`,
+      simulated_pass: `<div class="verif ok">Verification: the genuine customer passed (simulated from the known outcome).</div>`,
+      simulated_fail: `<div class="verif bad">Verification: failed — the fraudster couldn't complete it (simulated from the known outcome).</div>`,
+    };
+    const verif = c.verification ? (VER[c.verification] || "") : "";
     const sh = c.shadows || {};
     const shadow = (sh.rules_only && (sh.rules_only !== c.action || sh.model_only !== c.action))
       ? `<div class="shadow">Rules alone would <b>${VERDICT[sh.rules_only].label.toLowerCase()}</b> ·
@@ -275,6 +285,7 @@
       </div>
       ${aiSummary(c.summary)}
       ${alert}
+      ${verif}
       <div class="ask">
         <div class="q">Was this the right call?</div>
         <div class="btns">
@@ -314,6 +325,18 @@
 
     $("#detail").querySelectorAll("[data-fb]").forEach((b) =>
       b.addEventListener("click", () => sendFeedback(c, +b.dataset.fb)));
+    $("#detail").querySelectorAll("[data-ver]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const passed = b.dataset.ver === "1";
+        try {
+          const r = await fetch(`/cases/${c.id}/verification`, { method: "POST",
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passed }) });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) { toast(typeof j.detail === "string" ? j.detail : "Couldn't record the verification."); return; }
+          c.verification = j.verification; cache.set(c.id, c); selectCase(c.id);
+          toast(passed ? "Recorded: customer verified — learned as normal behaviour." : "Recorded: verification failed — marked as confirmed fraud.");
+        } catch { toast("Couldn't reach the verification API."); }
+      }));
     wireWhatIf(c);
     loadGraph(c.id);
   }
@@ -641,7 +664,20 @@
   $("#bulkCheck")?.addEventListener("click", () => sendBulk(true));
   $("#bulkScore")?.addEventListener("click", () => sendBulk(false));
 
-  /* ---------------- real-data replay ---------------- */
+  /* ---------------- dataset replay ---------------- */
+  // Dataset files aren't in the repository, so on a fresh deployment none may
+  // be present: disable their buttons instead of letting a click 404.
+  fetch("/replay/status").then((r) => r.json()).then((st) => {
+    const have = new Set((st.available || []).map((d) => d.schema));
+    document.querySelectorAll(".replayBtn").forEach((b) => {
+      if (!have.has(b.dataset.schema)) {
+        b.disabled = true; b.title = "Dataset not present on this server — see docs/REAL_DATA.md";
+      }
+    });
+    const blend = $("#blendBtn");
+    if (blend && !have.has("upi")) { blend.disabled = true; blend.title = "Needs the UPI-style dataset — see docs/REAL_DATA.md"; }
+    if (!have.size) $("#replayStatus").textContent = "No datasets are installed on this server (they aren't part of the repository) — see docs/REAL_DATA.md.";
+  }).catch(() => {});
   document.querySelectorAll(".replayBtn").forEach((btn) => {
     const original = btn.textContent;
     btn.addEventListener("click", async () => {
@@ -656,9 +692,9 @@
           return;
         }
         status.textContent = `Replayed ${j.replayed} real transactions (${j.cursor}/${j.total_rows} so far from ${schema}).`;
-        toast(`Streamed ${j.replayed} real, historical transactions into the live feed.`);
+        toast(`Streamed ${j.replayed} ${schema} dataset transactions into the live feed.`);
       } catch { status.textContent = "Couldn't reach the replay API."; }
-      finally { btn.disabled = false; btn.textContent = original; }
+      finally { btn.disabled = !!btn.title; btn.textContent = original; }
     });
   });
 
@@ -679,8 +715,8 @@
         console.error("Blended replay errors:", j.errors);
         toast(`Blended replay hit ${j.errors.length} error(s) — check the browser console.`);
       } else {
-        status.textContent = `Scored ${j.scored}/${j.requested} with zero errors — ${j.real_scored} real UPI + ${j.synth_scored} synthetic, merged chronologically (${j.real_cursor}/${j.real_total_rows} real rows used so far).`;
-        toast(`Streamed ${j.scored} blended transactions (real + synthetic) into the live feed — no errors.`);
+        status.textContent = `Scored ${j.scored}/${j.requested} with zero errors — ${j.real_scored} UPI-style dataset rows + ${j.synth_scored} synthetic, merged chronologically (${j.real_cursor}/${j.real_total_rows} dataset rows used so far).`;
+        toast(`Streamed ${j.scored} blended transactions (dataset + synthetic) into the live feed — no errors.`);
       }
     } catch { status.textContent = "Couldn't reach the blended replay API."; }
     finally { btn.disabled = false; btn.textContent = original; }

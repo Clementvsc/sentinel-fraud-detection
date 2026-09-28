@@ -252,6 +252,9 @@ async def score(txn: TransactionIn) -> JSONResponse:
     # int(None).
     if payload.get("cust_age") is None:
         payload.pop("cust_age", None)
+    # a live transaction's fraud outcome isn't known yet: a CHALLENGE waits
+    # for the bank's verification result (POST /cases/{id}/verification)
+    payload["_label_known"] = False
     case = _engine().process(payload)
     await hub.broadcast({"type": "case", "case": case})
     return JSONResponse(case)
@@ -268,27 +271,38 @@ async def tick(n: int = 10) -> dict:
             "drift": _engine().drift_status()}
 
 
+REPLAY_SCHEMAS = ("india_bank", "upi", "paysim", "sparkov", "ieee", "ulb")
+
+
+def _dataset_path(schema: str):
+    """Where a replayable dataset lives by default (data/ is git-ignored, so
+    these exist only where someone has put the files)."""
+    from pathlib import Path
+    data_dir = config.ROOT.parent / "data"
+    candidates = {
+        "india_bank": [data_dir / "india_bank" / "Transaction_Data_250k.csv"],
+        "ulb": [data_dir / "ulb.csv", data_dir / "creditcard.csv"],
+    }.get(schema, [data_dir / f"{schema}.csv"])
+    return next((c for c in candidates if c.exists()), candidates[0])
+
+
 @app.post("/replay")
 async def replay(r: ReplayIn) -> dict:
-    """Stream real, historical transactions (not the synthetic simulator) through
-    the exact same live scoring + broadcast path as /score. Each row is a genuine
-    transaction from a public fraud-research dataset (see datasets/csv_adapter.py
-    for the supported schemas and datasets/fetch.py for the one auto-downloadable
-    source). `upi` (real Indian UPI/Razorpay transactions) is the default and, if
-    present, needs no download; `paysim` (Kaggle PaySim mobile-money simulator)
-    and the others need a CSV you downloaded yourself — point `path` at it, or
-    drop it at data/<schema_name>.csv."""
+    """Stream historical transactions from an independent dataset (not the
+    synthetic simulator) through the exact same live scoring + broadcast path
+    as /score (see datasets/csv_adapter.py for the schemas). The datasets are
+    not part of the repository — put the files under data/ (docs/REAL_DATA.md)
+    or pass `path`. None of the supported datasets is real bank data."""
     from pathlib import Path
     from .datasets.csv_adapter import load_csv_events
 
-    csv_path = Path(r.path) if r.path else (config.ROOT.parent / "data" / f"{r.schema_name}.csv")
+    csv_path = Path(r.path) if r.path else _dataset_path(r.schema_name)
     if not csv_path.exists():
         raise HTTPException(
             404,
-            f"no dataset at {csv_path}. Download one first — see docs/DATA.md "
-            f"(the real Indian 'upi' dataset or Kaggle 'PaySim Synthetic Financial "
-            f"Datasets For Fraud Detection' both work well for live replay) — "
-            f"then pass its path in this request or place it at that path.",
+            f"no '{r.schema_name}' dataset on this server (expected {csv_path}). "
+            f"Dataset files aren't part of the repository — see docs/REAL_DATA.md "
+            f"for where to get them and where to put them, or pass its path in this request.",
         )
 
     STATE.setdefault("_replay_cursor", {})
@@ -305,7 +319,7 @@ async def replay(r: ReplayIn) -> dict:
     cases = []
     for ev in batch:
         ev = dict(ev)
-        ev["scenario"] = f"real:{r.schema_name}"
+        ev["scenario"] = f"dataset:{r.schema_name}"
         case = eng.process(ev)
         cases.append(case)
         await hub.broadcast({"type": "case", "case": case})
@@ -321,25 +335,19 @@ async def replay(r: ReplayIn) -> dict:
 
 @app.get("/replay/status")
 def replay_status() -> dict:
-    """What real datasets are already downloaded and ready to replay."""
-    from pathlib import Path
-    data_dir = config.ROOT.parent / "data"
+    """Which datasets are present on this server and ready to replay."""
     found = []
-    for schema in ("upi", "paysim", "sparkov", "ieee", "ulb"):
-        for name in (f"{schema}.csv", "creditcard.csv" if schema == "ulb" else None):
-            if not name:
-                continue
-            p = data_dir / name
-            if p.exists():
-                found.append({"schema": schema, "path": str(p), "size_mb": round(p.stat().st_size / 1e6, 1)})
-                break
-    return {"available": found, "data_dir": str(data_dir)}
+    for schema in REPLAY_SCHEMAS:
+        p = _dataset_path(schema)
+        if p.exists():
+            found.append({"schema": schema, "path": str(p), "size_mb": round(p.stat().st_size / 1e6, 1)})
+    return {"available": found, "data_dir": str(config.ROOT.parent / "data")}
 
 
 @app.post("/replay/blended")
 async def replay_blended(r: BlendIn) -> dict:
-    """Stream ONE combined transaction feed made of real, historical rows
-    (default: the real Indian UPI export) interleaved with fresh synthetic
+    """Stream ONE combined transaction feed made of historical dataset rows
+    (default: the UPI-style file) interleaved with fresh synthetic
     INR traffic from the same simulator the ambient feed uses — merged into
     a single chronological stream and scored through the exact same
     engine.process() path as everything else, one row at a time, so a
@@ -358,12 +366,12 @@ async def replay_blended(r: BlendIn) -> dict:
     from .datasets.csv_adapter import load_csv_events
     from .datasets import generate_customers, sample_legit_txn
 
-    csv_path = Path(r.real_path) if r.real_path else (config.ROOT.parent / "data" / f"{r.real_schema}.csv")
+    csv_path = Path(r.real_path) if r.real_path else _dataset_path(r.real_schema)
     if not csv_path.exists():
         raise HTTPException(
             404,
-            f"no real dataset at {csv_path}. See docs/DATA.md — the 'upi' schema "
-            f"is already committed at data/upi.csv and needs no download.",
+            f"no '{r.real_schema}' dataset on this server (expected {csv_path}). "
+            f"Dataset files aren't part of the repository — see docs/REAL_DATA.md.",
         )
 
     limit = max(1, min(r.limit, 2000))
@@ -382,7 +390,7 @@ async def replay_blended(r: BlendIn) -> dict:
 
     real_batch = [dict(e) for e in events[cursor: cursor + n_real]]
     for e in real_batch:
-        e["scenario"] = f"real:{r.real_schema}"
+        e["scenario"] = f"dataset:{r.real_schema}"
         e["_source"] = "real"
     STATE["_replay_cursor"][cache_key] = cursor + len(real_batch)
 
@@ -494,6 +502,7 @@ async def upload_transactions(u: UploadIn) -> dict:
     mix = {"ALLOW": 0, "REVIEW": 0, "CHALLENGE": 0, "BLOCK": 0}
     for ev in events:
         labelled = ev.pop("_labelled", False)
+        ev["_label_known"] = labelled
         case = eng.process(ev)
         mix[case["action"]] += 1
         stopped = case["action"] in ("BLOCK", "CHALLENGE")
@@ -558,6 +567,23 @@ def case_by_id(case_id: int) -> dict:
     if c is None:
         raise HTTPException(404, f"case {case_id} is no longer in the live buffer")
     return c
+
+
+class VerificationIn(BaseModel):
+    passed: bool
+
+
+@app.post("/cases/{case_id}/verification")
+def case_verification(case_id: int, v: VerificationIn) -> dict:
+    """Report the step-up (OTP) result for a CHALLENGEd transaction. Passed =
+    the payment went through and is learned as normal for that customer;
+    failed = recorded as confirmed fraud for the entity statistics."""
+    try:
+        return _engine().verify_challenge(case_id, v.passed)
+    except KeyError:
+        raise HTTPException(404, f"case {case_id} is no longer in the live buffer")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.post("/whatif")

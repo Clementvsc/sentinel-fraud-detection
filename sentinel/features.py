@@ -74,6 +74,7 @@ class ProfileState:
         "merchants", "countries", "devices", "beneficiaries",
         "last_ts", "last_lat", "last_lon", "last_country", "recent", "logins",
         "token_counts", "recent_tokens",
+        "peak_5m", "peak_1h", "_peak_pending",
     )
 
     def __init__(self, cust_id, home_country, home_lat, home_lon, account_open):
@@ -98,6 +99,12 @@ class ProfileState:
         self.logins: Deque[Tuple[datetime, int]] = deque()
         self.token_counts: dict[str, int] = {}          # all-time behaviour tokens
         self.recent_tokens: Deque[str] = deque(maxlen=12)
+        # personal velocity baseline: the busiest 5-minute / 1-hour spells seen
+        # among this customer's ALLOWED transactions (so an attacker's stopped
+        # burst never raises it). Velocity rules compare against it.
+        self.peak_5m = 0
+        self.peak_1h = 0
+        self._peak_pending: Deque[Tuple[datetime, int, int]] = deque()
 
     @property
     def std(self) -> float:
@@ -128,10 +135,28 @@ class ProfileState:
         self.last_ts, self.last_country = ts, txn["country"]
         self.last_lat, self.last_lon = float(txn["lat"]), float(txn["lon"])
         self.recent.append((ts, amt, txn["merchant_id"], txn["country"]))
+        # A busy spell only becomes part of the baseline once it is over an
+        # hour old: otherwise an attacker's first (still-allowed) probes would
+        # raise the bar that their own burst is then measured against.
+        pend = getattr(self, "_peak_pending", None)
+        if pend is None:
+            pend = self._peak_pending = deque()
+        pend.append((ts, len(self._win(ts, 300)), len(self._win(ts, 3600))))
         self._trim(self.recent, ts)
         tok = _token(txn)
         self.token_counts[tok] = self.token_counts.get(tok, 0) + 1
         self.recent_tokens.append(tok)
+
+    def velocity_baseline(self, now: datetime) -> dict:
+        """The customer's established busiest 5-minute / 1-hour spells (spells
+        at least an hour old) and how many allowed transactions they have."""
+        pend = getattr(self, "_peak_pending", None) or deque()
+        p5, p1 = getattr(self, "peak_5m", 0), getattr(self, "peak_1h", 0)
+        while pend and (now - pend[0][0]).total_seconds() >= 3600:
+            _t, c5, c1 = pend.popleft()
+            p5, p1 = max(p5, c5), max(p1, c1)
+        self.peak_5m, self.peak_1h = p5, p1
+        return {"peak_5m": float(p5), "peak_1h": float(p1), "n": float(self.n)}
 
     def add_login(self, ts, success, device_id="") -> None:
         self.logins.append((ts, int(success)))

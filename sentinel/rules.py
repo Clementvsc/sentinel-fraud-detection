@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from .config import (
     ATO_FAILED_LOGINS,
-    CARD_TESTING_TXNS_5M,
+    CARD_TESTING_TXNS_5M, CARD_TESTING_MAX_AMOUNT, VELOCITY_MIN_HISTORY, VELOCITY_PERSONAL_MULT,
     ENTITY_FRAUD_RATE_BLOCK,
     HIGH_RISK_MCC,
     RING_SIZE_CHALLENGE,
@@ -28,7 +28,21 @@ class RuleHit:
     message: str
 
 
-def evaluate_rules(feat: dict, txn: dict) -> list[RuleHit]:
+def _faster_than_usual(f: dict, window: str, baseline: dict | None) -> bool:
+    """Is this burst unusual for THIS customer? Absolute velocity thresholds
+    alone challenge every transaction of a customer who is always busy (a
+    shopkeeper, a heavy UPI user). Once a customer has enough history, a
+    velocity rule fires only if the current count clearly exceeds their own
+    established busiest spell (ProfileState.velocity_baseline); for new
+    customers, or when no baseline is supplied, the absolute threshold stands."""
+    if not baseline or baseline.get("n", 0.0) < VELOCITY_MIN_HISTORY:
+        return True
+    count = f["txn_count_5m"] if window == "5m" else f["txn_count_1h"]
+    peak = baseline["peak_5m"] if window == "5m" else baseline["peak_1h"]
+    return count > VELOCITY_PERSONAL_MULT * peak
+
+
+def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[RuleHit]:
     hits: list[RuleHit] = []
     f = feat  # shorthand
 
@@ -40,11 +54,25 @@ def evaluate_rules(feat: dict, txn: dict) -> list[RuleHit]:
             f"since the last transaction",
         ))
 
-    if f["txn_count_5m"] >= CARD_TESTING_TXNS_5M:
-        hits.append(RuleHit(
-            "card_testing", "block",
-            f"Card-testing pattern: {int(f['txn_count_5m'])} transactions in 5 minutes",
-        ))
+    if f["txn_count_5m"] >= CARD_TESTING_TXNS_5M and _faster_than_usual(f, "5m", baseline):
+        # Card testing = a burst of TINY probe charges at merchants the
+        # customer has never used, checking whether a stolen card works.
+        # Ordinary bursts (splitting a bill, retrying a UPI payment, a small
+        # shop's busy hour) are fast but not that pattern; hard-blocking them
+        # declined most genuine customers on UPI traffic. They get step-up
+        # verification instead — and only when faster than THIS customer's
+        # own usual pace (see _faster_than_usual).
+        if (float(txn.get("amount", 0.0)) <= CARD_TESTING_MAX_AMOUNT
+                and f.get("new_merchant", 1.0) >= 1.0):
+            hits.append(RuleHit(
+                "card_testing", "block",
+                f"Card-testing pattern: {int(f['txn_count_5m'])} small payments to new merchants in 5 minutes",
+            ))
+        else:
+            hits.append(RuleHit(
+                "rapid_burst", "challenge",
+                f"Rapid burst: {int(f['txn_count_5m'])} transactions in 5 minutes — faster than this customer's usual pace",
+            ))
 
     if f["failed_logins_1h"] >= ATO_FAILED_LOGINS and f["amount_to_max"] > 1.0:
         hits.append(RuleHit(
@@ -74,7 +102,7 @@ def evaluate_rules(feat: dict, txn: dict) -> list[RuleHit]:
             f"({f['amount_z']:.1f}σ above normal)",
         ))
 
-    if f["txn_count_1h"] >= VELOCITY_TXNS_1H:
+    if f["txn_count_1h"] >= VELOCITY_TXNS_1H and _faster_than_usual(f, "1h", baseline):
         hits.append(RuleHit(
             "velocity_1h", "challenge",
             f"Unusual velocity: {int(f['txn_count_1h'])} transactions in the past hour",

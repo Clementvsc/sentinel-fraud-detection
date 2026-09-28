@@ -533,3 +533,16 @@ canvas { max-height: 220px; }
 .sim .uerrs > summary { color: var(--block); font-weight: 600; font-size: 12.5px; }
 .sim .hint a, .evalpanel a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .sim .hint a:hover, .evalpanel a:hover { color: var(--text); }
+
+/* ---------------- step-up verification ---------------- */
+.verif { margin: 10px 0; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; border: 1px solid var(--line-soft); background: var(--panel-2); }
+.verif .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+.verif .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.verif .btns button { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+.verif .btns button[data-ver="1"]:hover { border-color: var(--allow); color: var(--allow); }
+.verif .btns button[data-ver="0"]:hover { border-color: var(--block); color: var(--block); }
+.verif .hint { margin-top: 6px; }
+.verif.ok { color: var(--allow); border-color: rgba(52,211,153,.3); }
+.verif.bad { color: var(--block); border-color: rgba(248,113,113,.3); }
+
+.abtn:disabled, .ghost:disabled { opacity: .45; cursor: not-allowed; }

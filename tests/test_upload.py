@@ -97,3 +97,20 @@ def test_upload_endpoint_rejects_unusable_files_with_a_readable_message():
         assert r.status_code == 422 and "missing required column" in r.json()["detail"]
         t = client.get("/upload/template.csv")
         assert t.status_code == 200 and t.text.startswith("cust_id,amount")
+
+
+def test_replay_status_and_missing_dataset_message(monkeypatch, tmp_path):
+    """Datasets aren't in the repository: /replay/status must report only what
+    is really present, and replaying a missing one must say where to get it."""
+    from sentinel import config
+    from sentinel.main import app
+    monkeypatch.setattr(config, "ROOT", tmp_path / "sentinel")
+    with TestClient(app) as client:
+        assert client.get("/replay/status").json()["available"] == []
+        r = client.post("/replay", json={"schema_name": "india_bank", "limit": 5})
+        assert r.status_code == 404 and "docs/REAL_DATA.md" in r.json()["detail"]
+    ib = tmp_path / "data" / "india_bank"
+    ib.mkdir(parents=True)
+    (ib / "Transaction_Data_250k.csv").write_text("Transaction_ID\n")
+    with TestClient(app) as client:
+        assert [d["schema"] for d in client.get("/replay/status").json()["available"]] == ["india_bank"]

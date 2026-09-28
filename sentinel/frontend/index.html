@@ -134,16 +134,17 @@
       <details class="sim" id="replay">
         <summary>Replay real transactions</summary>
         <div class="body">
-          <div class="hint">Streams genuine historical transactions (real amounts, merchants/UPI apps, and fraud labels from a public dataset) through the same live pipeline — not the synthetic simulator. See <code>docs/DATA.md</code> to download a dataset first.</div>
+          <div class="hint">Streams transactions from an independent dataset (its own amounts, merchants and fraud labels) through the same live pipeline — not Sentinel's own simulator. These datasets are generated, not real bank records; see <code>docs/REAL_DATA.md</code>. Buttons are disabled for datasets not present on this server.</div>
           <div class="btns">
-            <button class="abtn replayBtn" data-schema="upi">Replay 100 real UPI transactions (India)</button>
-            <button class="abtn replayBtn" data-schema="paysim">Replay 100 real PaySim transactions</button>
+            <button class="abtn replayBtn" data-schema="india_bank">Replay 100 Indian bank transactions</button>
+            <button class="abtn replayBtn" data-schema="upi">Replay 100 UPI-style transactions</button>
+            <button class="abtn replayBtn" data-schema="paysim">Replay 100 PaySim transactions</button>
           </div>
           <div class="hint" id="replayStatus"></div>
           <div id="blendBlock">
-            <div class="hint" style="margin-top:10px">Or stream one combined feed — real UPI transactions merged chronologically with fresh synthetic INR traffic, scored in a single timeline:</div>
+            <div class="hint" style="margin-top:10px">Or stream one combined feed — UPI-style dataset rows merged chronologically with fresh synthetic INR traffic, scored in a single timeline:</div>
             <div class="btns">
-              <button class="abtn" id="blendBtn">Replay 100 blended (real UPI + synthetic)</button>
+              <button class="abtn" id="blendBtn">Replay 100 blended (UPI-style + synthetic)</button>
             </div>
             <div class="hint" id="blendStatus"></div>
           </div>

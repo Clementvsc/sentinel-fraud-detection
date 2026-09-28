@@ -81,3 +81,33 @@ def test_unknown_schema(tmp_path):
         assert False
     except ValueError:
         pass
+
+
+_IB_TX = """Transaction_ID,Customer_ID,Card_ID,Merchant_ID,Transaction_Date,Transaction_Time,Transaction_Amount,Payment_Method,Transaction_Channel,Device_Type,Transaction_Status,Is_International,Fraud_Flag,Fraud_Reason,Merchant_Risk_Level,Merchant_Category,Customer_State,Customer_City,Merchant_State,Merchant_City
+TXN1,CUST1,CARD1,MER1,2024-03-03,05:50:10,21748.02,Debit Card,Mobile App,Android Mobile,Successful,1,1,Unusual Cross-Border / International Transaction,Low,Hotel,Tamil Nadu,Madurai,Tamil Nadu,Salem
+TXN2,CUST2,CARD2,MER2,2023-11-08,06:55:15,9960.6,UPI,Online Web,Windows PC,Successful,0,0,None,Low,Grocery,Kerala,Kollam,Haryana,Nuh
+TXN3,CUST1,CARD1,MER3,2024-03-04,10:00:00,500.0,Credit Card,POS,POS Terminal,Declined,0,1,Transaction Attempt on Blocked Card,High,Fashion,Tamil Nadu,Madurai,Tamil Nadu,Madurai
+"""
+_IB_CUST = """Customer_ID,Customer_Name,Gender,Age,Marital_Status,Occupation,Annual_Income,Customer_Segment,State,City,Account_Type,Customer_Since
+CUST1,A,Female,67,Married,Retired,500000,Gold,Tamil Nadu,Madurai,Savings,2017-11-13
+CUST2,B,Male,24,Single,Engineer,900000,Standard,Kerala,Kollam,Salary,2020-05-05
+"""
+
+
+def test_india_bank_mapping_joins_real_ages_and_skips_declines(tmp_path):
+    (tmp_path / "Transaction_Data_250k.csv").write_text(_IB_TX)
+    (tmp_path / "Cusmtomer_data.csv").write_text(_IB_CUST)
+    ev = load_csv_events(str(tmp_path / "Transaction_Data_250k.csv"), "india_bank")
+    assert len(ev) == 2                                   # the declined row is not loaded
+    assert [e["cust_id"] for e in ev] == ["ib_CUST2", "ib_CUST1"]   # time-sorted
+    upi, hotel = ev
+    assert upi["cust_age"] == 24 and hotel["cust_age"] == 67      # ages from the customer table
+    assert upi["channel"] == "transfer" and upi["mcc"] == "grocery" and upi["country"] == "IN"
+    assert hotel["country"] == "XX" and hotel["mcc"] == "travel" and hotel["label"] == 1
+    assert hotel["amount"] == 21748.02 and hotel["card_bin"] == "CARD1"
+
+
+def test_india_bank_without_customer_table_still_loads(tmp_path):
+    (tmp_path / "tx.csv").write_text(_IB_TX)
+    ev = load_csv_events(str(tmp_path / "tx.csv"), "india_bank")
+    assert len(ev) == 2 and all("cust_age" not in e for e in ev)

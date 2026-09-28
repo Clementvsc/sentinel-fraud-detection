@@ -64,3 +64,48 @@ def test_normal_txn_is_clean():
     txn = _txn(now + timedelta(hours=6), amount=44, merchant_id="grocery_1")
     feat = compute_features(txn, ps, EntityRegistry(), txn["ts"])
     assert evaluate_rules(feat, txn) == []
+
+
+def test_ordinary_payment_bursts_are_challenged_not_blocked():
+    """Six normal-sized payments in five minutes to a merchant the customer
+    already uses (bill splitting, UPI retries) is fast, but it is not card
+    testing: step-up verification, never a hard block."""
+    ps, now = _ps()
+    ps.update(_txn(now - timedelta(days=1), amount=400.0, merchant_id="kirana_1", channel="online", mcc="grocery"))
+    hits = []
+    for i in range(7):
+        t = now + timedelta(seconds=30 * i)
+        txn = _txn(t, amount=450.0, channel="online", merchant_id="kirana_1", mcc="grocery")
+        feat = compute_features(txn, ps, EntityRegistry(), t)
+        hits = evaluate_rules(feat, txn, ps.velocity_baseline(t))
+        ps.update(txn)
+    codes = {h.code for h in hits}
+    assert "card_testing" not in codes and "rapid_burst" in codes
+    assert worst_severity(hits) == "challenge"
+
+
+def test_velocity_rules_respect_a_customers_established_pace():
+    """A customer who is routinely this busy (e.g. a shop's account) must not
+    be challenged for their normal pace — but a burst well above it still is."""
+    ps, now = _ps()
+    day0 = now - timedelta(days=3)
+    for d in range(3):                                   # three busy days, 14 txns in an hour each
+        for k in range(14):
+            ps.update(_txn(day0 + timedelta(days=d, minutes=4 * k), amount=300.0,
+                           merchant_id=f"m{k % 3}", channel="online", mcc="retail"))
+    base = ps.velocity_baseline(now)
+    assert base["peak_1h"] >= 14 and base["n"] >= 20
+    def one_hour(n_txn):
+        p2, t0 = _ps()[0], now
+        for attr in ("n", "peak_5m", "peak_1h"):
+            setattr(p2, attr, getattr(ps, attr))
+        last = None
+        for k in range(n_txn):
+            t = t0 + timedelta(minutes=60 * k / n_txn)
+            txn = _txn(t, amount=300.0, merchant_id=f"m{k % 3}", channel="online", mcc="retail")
+            feat = compute_features(txn, p2, EntityRegistry(), t)
+            last = evaluate_rules(feat, txn, base)
+            p2.update(txn)
+        return {h.code for h in last}
+    assert "velocity_1h" not in one_hour(14)             # their normal pace
+    assert "velocity_1h" in one_hour(30)                 # > 1.5x their busiest spell

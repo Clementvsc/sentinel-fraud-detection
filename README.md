@@ -47,7 +47,7 @@ wrapped in:
 | **Assurance** | `python -m sentinel.audit` — latency percentiles + throughput, and fairness / disparate‑impact by country / spend tier / age / channel |
 | **Evaluation** | `python -m sentinel.eval` — held-out confusion matrix, precision / recall / F1 / MCC with 95 % CIs, ROC & PR-AUC, calibration, per-attack recall, age fairness, operating points → [docs/EVALUATION.md](docs/EVALUATION.md) |
 | **Data entry** | score one transaction by hand, or **upload a CSV** of up to 2,000 (row-level validation; reports accuracy if the file has fraud labels) |
-| **Data** | seeded synthetic generator (7 playbooks, 3 adversarial) **or** real data — `python -m sentinel.datasets.fetch ulb` pulls **284,807 real transactions** cost‑free, or point `SENTINEL_DATA=` at any Kaggle ULB / IEEE‑CIS / Sparkov CSV |
+| **Data** | seeded synthetic generator (Indian customers, INR, 7 playbooks, 3 adversarial) **or** a dataset — `python -m sentinel.datasets.fetch ulb` pulls **284,807 real transactions** cost‑free; adapters for an Indian retail-banking dataset with customer ages (`india_bank`), UPI-style and PaySim files (all generated — see [docs/REAL_DATA.md](docs/REAL_DATA.md)), and Kaggle IEEE‑CIS / Sparkov |
 
 ---
 
@@ -136,7 +136,10 @@ instantly the same test would report 98.4 % recall; with no outcome data at all,
 > production claim. Validate on the bank's own labelled history before go-live. The ML core is
 > **also validated on real data**: `python -m sentinel.datasets.fetch ulb` → 284,807 real
 > transactions → out-of-time ROC-AUC **0.92**; see
-> [docs/REAL_DATA_VALIDATION.md](docs/REAL_DATA_VALIDATION.md), [docs/DATA.md](docs/DATA.md) and
+> [docs/REAL_DATA_VALIDATION.md](docs/REAL_DATA_VALIDATION.md). On the Indian banking dataset the
+> shipped model does **not** transfer (classifier ROC-AUC ≈ 0.46); retrained on that data with the same
+> pipeline it reaches out-of-time ROC-AUC **0.86** / PR-AUC 0.28 — train on your own history. See also
+> [docs/DATA.md](docs/DATA.md) and
 > [docs/MODEL_CARD.md](docs/MODEL_CARD.md).
 
 ---

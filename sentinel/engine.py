@@ -138,6 +138,7 @@ class Engine:
         hours = config.LABEL_DELAY_HOURS if label_delay_hours is None else label_delay_hours
         self.label_delay = timedelta(hours=hours) if hours > 0 else None
         self._pending_labels: list = []     # heap of (release_ts, seq, entity keys)
+        self._pending_challenges: dict = {}  # case id -> txn awaiting its verification outcome
         self.profiles: dict[str, ProfileState] = {}
         self.customers: dict = {}
         self.entities = EntityRegistry()
@@ -317,7 +318,7 @@ class Engine:
             online_adj = self.online.adjustment(feat)
             if online_adj:
                 score.risk = float(max(0.0, min(1.0, score.risk + online_adj)))
-            hits = evaluate_rules(feat, txn)
+            hits = evaluate_rules(feat, txn, ps.velocity_baseline(now))
             # Explain only cases an analyst might actually review.
             from .config import RISK_REVIEW
             if hits or score.risk >= RISK_REVIEW or score.fraud_proba >= self.model.label_threshold:
@@ -340,8 +341,30 @@ class Engine:
             # follow-up transfers then sailed through. Training never lets
             # fraud update a profile (train.replay), so this also removes a
             # train/serve mismatch.
+            #
+            # A CHALLENGE's outcome is the step-up verification (OTP): a genuine
+            # customer passes and the payment goes through — it must then be
+            # learned, or a busy new customer who gets challenged once has a
+            # frozen profile and is challenged forever. Where the true outcome
+            # is known (simulator, dataset replays, evaluation, labelled
+            # uploads) verification is resolved from it: genuine passes,
+            # fraud fails (optimistic about attackers — some pass via SIM
+            # swap). Otherwise (live /score) it stays pending until the bank
+            # reports it via verify_challenge() / POST /cases/{id}/verification.
+            outcome_known = txn.pop("_label_known", True)
+            verification = None
             if decision.action in ("ALLOW", "REVIEW"):
                 ps.update(txn)
+            elif decision.action == "CHALLENGE":
+                if outcome_known:
+                    verification = "simulated_pass" if label == 0 else "simulated_fail"
+                    if label == 0:
+                        ps.update(txn)
+                else:
+                    verification = "pending"
+                    self._pending_challenges[self._seq + 1] = dict(txn)
+                    while len(self._pending_challenges) > config.CASE_BUFFER:
+                        self._pending_challenges.pop(next(iter(self._pending_challenges)))
             # Entity/graph tracking (device, beneficiary, merchant, BIN fraud
             # history and fraud-ring fan-in/out) always records, even on
             # BLOCK: a blocked fraud attempt is exactly the signal that should
@@ -378,6 +401,7 @@ class Engine:
                 "fraud_proba": round(score.fraud_proba, 4), "anomaly": round(score.anomaly, 4),
                 "reasons": decision.reasons, "rule_hits": decision.rule_hits,
                 "customer_alert": decision.customer_alert,
+                "verification": verification,
                 "explanation": [{"feature": n, "value": round(v, 3), "contribution": round(c, 4)}
                                 for n, v, c in score.top_features],
                 "explanation_method": "grouped counterfactual reference search",
@@ -400,6 +424,39 @@ class Engine:
         if only == "alerts":
             items = [c for c in items if c["action"] in ("BLOCK", "CHALLENGE", "REVIEW")]
         return items[:limit]
+
+    def _baseline_for(self, case: dict) -> dict | None:
+        """The customer's velocity baseline as of a stored case, so what-if and
+        robustness re-scoring apply the same velocity rules as the live call."""
+        ps = self.profiles.get(case.get("cust_id"))
+        if ps is None:
+            return None
+        ts = case.get("ts")
+        now = datetime.fromisoformat(ts) if isinstance(ts, str) else (ts or datetime.utcnow())
+        return ps.velocity_baseline(now)
+
+    def verify_challenge(self, case_id: int, passed: bool) -> dict:
+        """The bank's step-up verification result for a CHALLENGEd case. A
+        pass means the payment went through, so it becomes part of the
+        customer's normal behaviour; a fail is recorded as confirmed fraud."""
+        with self._lock:
+            pend = getattr(self, "_pending_challenges", {})
+            txn = pend.pop(case_id, None)
+            case = self.get_case(case_id)
+            if txn is None:
+                if case is None:
+                    raise KeyError(case_id)
+                raise ValueError("this case is not awaiting verification "
+                                 f"(action {case['action']}, or already resolved)")
+            if passed:
+                ps = self.profiles.get(txn["cust_id"])
+                if ps is not None:
+                    ps.update(txn)
+            else:
+                self.entities.confirm_fraud(txn, txn["ts"])
+            if case is not None:
+                case["verification"] = "passed" if passed else "failed"
+            return {"case_id": case_id, "verification": "passed" if passed else "failed"}
 
     def get_case(self, case_id: int):
         return next((c for c in self.cases if c["id"] == case_id), None)
@@ -470,7 +527,7 @@ class Engine:
         txn = {"mcc": base["mcc"], "channel": base["channel"], "country": base["country"],
                "amount": feat["amount"], "merchant_id": base["merchant_id"],
                "beneficiary": base.get("beneficiary", "")}
-        hits = _rules(feat, txn)
+        hits = _rules(feat, txn, self._baseline_for(base))
         dec = _decide(score, hits, txn, self.model.label_threshold)
         preview = {**base, "action": dec.action, "risk": dec.risk,
                    "fraud_proba": round(score.fraud_proba, 4),
@@ -532,7 +589,7 @@ class Engine:
             txn = {"mcc": base["mcc"], "channel": base["channel"], "country": base["country"],
                    "amount": feat.get("amount", base["amount"]), "merchant_id": base["merchant_id"],
                    "beneficiary": base.get("beneficiary", "")}
-            hits = _rules(feat, txn)
+            hits = _rules(feat, txn, self._baseline_for(base))
             dec = _decide(score, hits, txn, self.model.label_threshold)
             points.append({"value": round(v, 4), "risk": round(dec.risk, 4),
                            "action": dec.action, "rule_hits": len(dec.rule_hits)})

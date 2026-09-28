@@ -1,35 +1,50 @@
-# Replaying real transactions live (not just training on them)
+# Replaying dataset transactions live (not just training on them)
 
-`docs/DATA.md` covers training on real datasets offline. This is the
-companion piece: streaming **genuine, historical transactions** through the
-*live* dashboard — the same `/score` path the simulator uses — so what you
-see scrolling by is real merchant/amount/location/fraud-label data instead of
-synthetic traffic.
+`docs/DATA.md` covers training on datasets offline. This is the companion
+piece: streaming **historical dataset transactions** through the *live*
+dashboard — the same `/score` path the simulator uses — instead of Sentinel's
+own synthetic traffic.
 
-## Fastest path: real Indian UPI data (zero setup, recommended)
+> **Provenance, stated plainly.** None of the replayable datasets here is real
+> bank data. The Indian banking dataset and PaySim are generated; the UPI file
+> appears to be simulator output (see below). They exercise the live pipeline
+> on independent data with its own labels — useful for demos and stress tests —
+> but results on them are not evidence about a real bank's customers. Validate
+> on the bank's own labelled history before production use.
 
-A genuine Razorpay/UPI transaction export — real apps (GPay, PhonePe, Amazon
-Pay, ...), real banks (SBI, HDFC, Axis, ...), INR amounts — is already
-committed at `data/upi.csv`, so there's nothing to download. With the server
-running, either:
-- click **"Replay 100 real UPI transactions (India)"** in the dashboard, or
-- call the API directly:
-  ```bash
-  curl -X POST localhost:8000/replay -H 'content-type: application/json' \
-    -d '{"schema_name": "upi", "limit": 100}'
-  ```
+Dataset files live in `data/`, which is git-ignored: they are **not** part of
+the repository or of a cloud deployment. The dashboard checks `/replay/status`
+and disables the buttons for datasets that aren't present on the server.
 
-`upi` is the `/replay` default schema. Each `device_fingerprint` in the
-source data is a stable per-payer identity, so the live engine's per-customer
-profile (velocity, new-device, entity fraud-rate history) works exactly as it
-does on synthetic traffic — just on real, historical UPI transactions.
+## Indian banking dataset (`india_bank`, recommended)
+
+Four CSVs — transactions, customers (with age), cards, merchants — put in
+`data/india_bank/`. 227,821 successful INR transactions across Indian states
+and cities, 1.38 % fraud, and every customer's **real age from the data**, so
+the age panels show dataset ages rather than Sentinel's per-customer fallback.
+It is generated data (machine-made names, rule-derived fraud labels), and
+customers are sparse (median 9 transactions over 3.6 years), so behavioural
+signals are weaker than on dense card data. Click **"Replay 100 Indian bank
+transactions"**, or:
+```bash
+curl -X POST localhost:8000/replay -H 'content-type: application/json' \
+  -d '{"schema_name": "india_bank", "limit": 100}'
+```
+
+## UPI-style file (`upi`)
+
+A UPI/Razorpay-style transaction file of **unknown provenance**. Despite earlier docs calling it a genuine export, its contents indicate an agent-based **simulator**: an `agent_type` column (normal / fraud / impatient / dormant / …), every transaction on a weekday between 9:00 and 19:00, one IP per device, and devices making 60–779 payments an hour. Useful as UPI-shaped demo traffic, not as evidence about real customers. Put it at `data/upi.csv`. Because its devices
+transact at bot-like speed from their first appearance, Sentinel challenges a
+large share of its "genuine" rows — which is the right response to 30+
+payments in a device's first hour, and a property of the file, not a
+benchmark.
 
 ## Second dataset: PaySim (download required)
 
 **"Synthetic Financial Datasets For Fraud Detection"** (PaySim) is a
 mobile-money simulator with real customer identities (`nameOrig`) and
 transaction types (CASH_IN/CASH_OUT/DEBIT/PAYMENT/TRANSFER), useful as a
-second, larger source once you've exhausted the UPI export:
+second, larger generated source:
 
 1. Get a free Kaggle account: https://www.kaggle.com/account/login
 2. Download **"Synthetic Financial Datasets For Fraud Detection"**:
@@ -39,7 +54,7 @@ second, larger source once you've exhausted the UPI export:
    mkdir -p data
    mv ~/Downloads/PS_20174392719_1491204439457_log.csv data/paysim.csv
    ```
-4. Click **"Replay 100 real PaySim transactions"**, or:
+4. Click **"Replay 100 PaySim transactions"**, or:
    ```bash
    curl -X POST localhost:8000/replay -H 'content-type: application/json' \
      -d '{"schema_name": "paysim", "limit": 100}'
@@ -69,8 +84,8 @@ components with no real customer, merchant, or location identity — every row
 shares the same placeholder `cust_id`. That's fine for judging the model in
 isolation, but it can't drive the live per-customer engine (impossible
 travel, new-device, new-payee, entity fraud-rate history, etc. all need a
-real identity to compare against). `upi` and `paysim` rows carry real payer
-identities, so they exercise the full live pipeline properly.
+real identity to compare against). `india_bank`, `upi` and `paysim` rows carry
+per-customer identities, so they exercise the full live pipeline properly.
 
 ## Going further: real-time feeds instead of a static file
 
