@@ -16,6 +16,7 @@ from .config import (
     CARD_TESTING_TXNS_5M, CARD_TESTING_MAX_AMOUNT, VELOCITY_MIN_HISTORY, VELOCITY_PERSONAL_MULT,
     ENTITY_FRAUD_RATE_BLOCK,
     HIGH_RISK_MCC,
+    KNOWN_CITIES_BY_COUNTRY,
     MAX_PLAUSIBLE_AMOUNT,
     RING_SIZE_CHALLENGE,
     VELOCITY_TXNS_1H,
@@ -46,6 +47,21 @@ def _faster_than_usual(f: dict, window: str, baseline: dict | None) -> bool:
 def evaluate_rules(feat: dict, txn: dict, baseline: dict | None = None) -> list[RuleHit]:
     hits: list[RuleHit] = []
     f = feat  # shorthand
+
+    city = (txn.get("city") or "").strip().lower()
+    country = (txn.get("country") or "").strip().upper()
+    known = KNOWN_CITIES_BY_COUNTRY.get(country)
+    if city and known is not None and city not in known:
+        # A typed city that doesn't belong to the selected country (e.g.
+        # country=IN, city=toronto) is either a data-entry mistake or an
+        # attempt to dress up a transaction with a mismatched location.
+        # Only checked for countries we have a known-city list for, so a
+        # legitimate city we simply haven't catalogued is never flagged.
+        hits.append(RuleHit(
+            "city_country_mismatch", "flag",
+            f"City '{txn.get('city')}' is not a recognised city in {country} "
+            f"— location fields don't match",
+        ))
 
     if f["amount"] > MAX_PLAUSIBLE_AMOUNT:
         # Independent of any customer's history: amount_z is 0 by

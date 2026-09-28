@@ -21,6 +21,8 @@ import csv
 import io
 from datetime import datetime, timedelta
 
+from .config import KNOWN_CITIES_BY_COUNTRY
+
 MAX_ROWS = 2000          # ~8 ms/row through the full pipeline -> well inside a 60 s serverless request
 MAX_BYTES = 1_000_000
 
@@ -70,14 +72,10 @@ TEMPLATE_CSV = (
 )
 
 # city -> (lat, lon) for the common Indian cities, so geo features aren't all
-# pinned to one point when a file has a city but no coordinates
-CITY_COORDS = {
-    "mumbai": (19.08, 72.88), "delhi": (28.61, 77.21), "new delhi": (28.61, 77.21),
-    "bengaluru": (12.97, 77.59), "bangalore": (12.97, 77.59), "chennai": (13.08, 80.27),
-    "hyderabad": (17.39, 78.49), "kolkata": (22.57, 88.36), "pune": (18.52, 73.86),
-    "ahmedabad": (23.02, 72.57), "jaipur": (26.91, 75.79), "lucknow": (26.85, 80.95),
-    "kochi": (9.93, 76.27), "chandigarh": (30.73, 76.78), "surat": (21.17, 72.83),
-}
+# pinned to one point when a file has a city but no coordinates. Shared with
+# sentinel.rules (which uses the same table to flag a city/country mismatch)
+# via sentinel.config.KNOWN_CITIES_BY_COUNTRY, so there is one list to keep current.
+CITY_COORDS = KNOWN_CITIES_BY_COUNTRY["IN"]
 DEFAULT_COORDS = CITY_COORDS["mumbai"]
 
 

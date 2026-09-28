@@ -59,6 +59,26 @@ HIGH_RISK_MCC = {"crypto", "gift_card", "wire_transfer"}
 ENTITY_FRAUD_RATE_BLOCK = 0.22   # a payee/device seen >=22% on fraud (~70x base rate) is blocked
 RING_SIZE_CHALLENGE = 4          # distinct victims sharing this device/beneficiary
 
+# Known city -> (lat, lon) per country, used two ways: sentinel.upload falls
+# back to these coordinates when a CSV gives a city but no lat/lon, and
+# sentinel.rules flags a transaction whose typed city doesn't belong to its
+# selected country (e.g. country=IN, city=toronto) — a real, catchable
+# data-entry/spoofing signal that was previously silently ignored, since
+# `city` is otherwise just a display string with no consistency check at all.
+# Coverage is intentionally partial (major Indian cities, this app's focus);
+# a country with no entry here is never flagged, to avoid false positives on
+# legitimate cities we simply haven't catalogued.
+KNOWN_CITIES_BY_COUNTRY = {
+    "IN": {
+        "mumbai": (19.08, 72.88), "delhi": (28.61, 77.21), "new delhi": (28.61, 77.21),
+        "bengaluru": (12.97, 77.59), "bangalore": (12.97, 77.59), "chennai": (13.08, 80.27),
+        "hyderabad": (17.39, 78.49), "kolkata": (22.57, 88.36), "pune": (18.52, 73.86),
+        "ahmedabad": (23.02, 72.57), "jaipur": (26.91, 75.79), "lucknow": (26.85, 80.95),
+        "kochi": (9.93, 76.27), "chandigarh": (30.73, 76.78), "surat": (21.17, 72.83),
+    },
+}
+DEFAULT_CITY_COORDS = KNOWN_CITIES_BY_COUNTRY["IN"]["mumbai"]
+
 # Absolute sanity ceiling, independent of any customer's history. Without this,
 # a brand-new customer's FIRST transaction sets amount_z = 0 by construction
 # (there's no personal baseline yet to be anomalous against), so a physically
