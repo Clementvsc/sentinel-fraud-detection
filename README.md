@@ -316,4 +316,4 @@ docs/             DATA.md · REAL_DATA_VALIDATION.md · MODEL_CARD.md
 - Nightly scheduled retrain triggered by the PSI `alert` state.
 - Per‑segment cost thresholds (a blocked $3 card‑test ≠ a blocked $3 000 payroll run).
 
-*Built for a hackathon. Defensive security use only.*
+*Defensive security use only.*
