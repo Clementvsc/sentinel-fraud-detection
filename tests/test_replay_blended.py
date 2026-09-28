@@ -70,7 +70,7 @@ def test_blended_handles_missing_dataset_cleanly(tmp_path):
             "limit": 10,
         })
         assert r.status_code == 404
-        assert "no real dataset" in r.json()["detail"]
+        assert "dataset on this server" in r.json()["detail"]
 
 
 def test_blended_real_share_extremes_dont_error(tmp_path):
