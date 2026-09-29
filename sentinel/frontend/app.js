@@ -675,6 +675,38 @@
   }
 
   /* ---------------- case detail ---------------- */
+  // Renders the customer-facing alert text as a small phone-frame mockup —
+  // a lock-screen-style push notification bubble — instead of a plain box.
+  // Purely presentational: c.customer_alert / c.action are unchanged data
+  // already sent by the backend (sentinel/decision.py); this only changes
+  // how that string is displayed, so "what the customer sees" reads at a
+  // glance during a demo instead of as another paragraph of text.
+  function phoneMockup(message, action) {
+    const tone = { BLOCK: "block", CHALLENGE: "challenge" }[action] || "block";
+    const appIcon = tone === "block"
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/></svg>`;
+    const label = tone === "block" ? "Fraud Alert" : "Verify It's You";
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return `<div class="alertbox">
+      <div class="l">Message sent to customer — live preview</div>
+      <div class="phone">
+        <div class="phone-notch"></div>
+        <div class="phone-screen">
+          <div class="phone-time">${time}</div>
+          <div class="push push-${tone}">
+            <div class="push-ico">${appIcon}</div>
+            <div class="push-body">
+              <div class="push-top"><b>${label}</b><span>now</span></div>
+              <div class="push-msg">${message}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
   function aiSummary(s) {
     if (!s) return "";
     const li = (arr, cls) => (arr || []).map((x) => `<li class="${cls}">${x}</li>`).join("");
@@ -724,8 +756,7 @@
     const c = cache.get(id); if (!c) return;
     selected = id;
     const v = VERDICT[c.action];
-    const alert = c.customer_alert
-      ? `<div class="alertbox"><div class="l">Message sent to customer</div>${c.customer_alert}</div>` : "";
+    const alert = c.customer_alert ? phoneMockup(c.customer_alert, c.action) : "";
     const VER = {
       pending: `<div class="verif pending"><div class="l">Verification (OTP) result</div>
         <div class="btns"><button data-ver="1">Customer passed</button><button data-ver="0">Verification failed</button></div>

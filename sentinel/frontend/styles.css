@@ -380,9 +380,33 @@ body.analyst .txn { grid-template-columns: 32px 1fr auto 46px; }
 .aireco { margin-top: 11px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.1); font-size: 12.5px; }
 .aigt { margin-top: 7px; font-size: 11.5px; color: var(--faint); font-style: italic; }
 
-.alertbox { background: rgba(255,92,122,.08); border: 1px solid rgba(255,92,122,.28); border-radius: var(--radius-sm);
-  padding: 12px 14px; font-size: 12.5px; margin-bottom: 15px; }
-.alertbox .l { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--block); font-weight: 800; margin-bottom: 4px; }
+.alertbox { background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 14px; margin-bottom: 15px; }
+.alertbox .l { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); font-weight: 800; margin-bottom: 10px; }
+
+/* Phone-frame mockup for the customer-facing push notification (phoneMockup()
+   in app.js). Small, self-contained glass "device" so a judge instantly reads
+   this as "what the customer sees on their phone" rather than another text box. */
+.phone { width: 220px; margin: 0 auto; background: #05070d; border-radius: 26px;
+  border: 1px solid rgba(255,255,255,.12); box-shadow: 0 0 0 5px rgba(255,255,255,.03), var(--shadow-1);
+  padding: 10px 8px 16px; position: relative; }
+.phone-notch { width: 60px; height: 16px; background: #000; border-radius: 0 0 12px 12px; margin: 0 auto 8px; }
+.phone-screen { background: linear-gradient(160deg, #0d1220, #070a12); border-radius: 16px; padding: 10px 8px 14px; min-height: 92px; }
+.phone-time { text-align: center; font-size: 11px; color: var(--faint); font-weight: 700; margin-bottom: 8px; letter-spacing: .3px; }
+.push { display: flex; gap: 9px; padding: 10px; border-radius: 13px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  animation: pushslide .45s var(--ease-spring); }
+@keyframes pushslide { from { opacity: 0; transform: translateY(-8px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.push-ico { width: 26px; height: 26px; border-radius: 8px; flex: none; display: grid; place-items: center; }
+.push-ico svg { width: 15px; height: 15px; }
+.push-block .push-ico { background: rgba(255,92,122,.18); color: var(--block); }
+.push-challenge .push-ico { background: rgba(255,159,90,.18); color: var(--challenge); }
+.push-body { min-width: 0; }
+.push-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.push-top b { font-size: 12px; color: var(--text); }
+.push-top span { font-size: 9.5px; color: var(--faint); white-space: nowrap; }
+.push-msg { font-size: 11px; color: var(--muted); line-height: 1.4; }
 
 .ask { margin-bottom: 15px; }
 .ask .q { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
